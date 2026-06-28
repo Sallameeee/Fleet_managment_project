@@ -1,0 +1,140 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Dark is the default (no class on <html>). */
+:root {
+  color-scheme: dark;
+  --c-ink-950: 10 15 26;
+  --c-ink-900: 15 23 42;
+  --c-ink-850: 20 29 49;
+  --c-ink-800: 30 41 59;
+  --c-ink-700: 51 65 85;
+  --c-slate-100: 241 245 249;
+  --c-slate-200: 226 232 240;
+  --c-slate-300: 203 213 225;
+  --c-slate-400: 148 163 184;
+  --c-slate-500: 100 116 139;
+  --c-strong: 255 255 255;
+  --c-brand-sage: 98 196 146; /* #62C492 */
+}
+
+/* Light mode: flip surfaces to light, text to dark, brand-sage to a darker green
+   that stays readable on light surfaces. */
+html.light {
+  color-scheme: light;
+  --c-ink-950: 248 250 252; /* page background */
+  --c-ink-900: 255 255 255; /* cards */
+  --c-ink-850: 241 245 249; /* inputs */
+  --c-ink-800: 226 232 240; /* borders / hover */
+  --c-ink-700: 203 213 225; /* borders */
+  --c-slate-100: 15 23 42; /* strong text */
+  --c-slate-200: 30 41 59;
+  --c-slate-300: 51 65 85; /* body text */
+  --c-slate-400: 100 116 139; /* muted */
+  --c-slate-500: 148 163 184; /* faint */
+  --c-strong: 15 23 42; /* text-white -> dark in light mode */
+  --c-brand-sage: 44 130 85; /* #2c8255 */
+}
+
+html,
+body {
+  height: 100%;
+}
+
+/* RTL: flexbox mirrors structure automatically (sidebar moves to the right).
+   These override the few PHYSICAL utilities in use so text/margins flip too,
+   without editing every component. */
+[dir="rtl"] .text-left {
+  text-align: right;
+}
+[dir="rtl"] .text-right {
+  text-align: left;
+}
+[dir="rtl"] .mr-2 {
+  margin-right: 0;
+  margin-left: 0.5rem;
+}
+[dir="rtl"] .border-r {
+  border-right-width: 0;
+  border-left-width: 1px;
+}
+
+/* ============================================================================
+   LIGHT-MODE SEMANTIC CONTRAST FIXES
+   Dark mode is the default (:root) and is intentionally untouched. Every rule
+   below is scoped to `html.light` (higher specificity than the base Tailwind
+   utility), so it only repaints light mode. Goal: pale pastel pills/badges/text
+   that vanish on white get a saturated fill + dark text + a visible border,
+   and white-on-color buttons (broken by the text-white→dark remap) get real
+   white text on a dark-enough fill.
+   ============================================================================ */
+
+/* --- WARNING (amber): alert-type pills, impersonation banner, outstanding --- */
+html.light .text-amber-100,
+html.light .text-amber-200,
+html.light .text-amber-300 {
+  color: #78350f; /* amber-900 — dark text */
+}
+html.light .bg-amber-500\/5 {
+  background-color: #fef3c7; /* amber-100 — subtle row highlight */
+}
+html.light .bg-amber-500\/10,
+html.light .bg-amber-500\/15,
+html.light .bg-amber-500\/20 {
+  background-color: #fde68a; /* amber-200 — saturated pill/banner fill */
+}
+html.light .border-amber-500\/30,
+html.light .border-amber-500\/40,
+html.light .border-amber-500\/50 {
+  border-color: #d97706; /* amber-600 — visible border */
+}
+
+/* --- DANGER (red): error banners, delete actions, expired status --- */
+html.light .text-red-200,
+html.light .text-red-300 {
+  color: #991b1b; /* red-800 — dark text */
+}
+html.light .bg-red-500\/10,
+html.light .bg-red-500\/15 {
+  background-color: #fecaca; /* red-200 — saturated fill */
+}
+html.light .border-red-500\/30,
+html.light .border-red-500\/40 {
+  border-color: #ef4444; /* red-500 — visible border */
+}
+
+/* --- SUCCESS (brand green): active status, online, selected --- */
+/* (green TEXT already flips to #2c8255 via the --c-brand-sage var) */
+html.light .text-brand {
+  color: #2c8255; /* #3AA76D is too faint on white (~2.8:1) */
+}
+html.light .bg-brand\/10,
+html.light .bg-brand\/15 {
+  background-color: rgb(58 167 109 / 0.16); /* on-brand light-green fill */
+}
+html.light .border-brand\/30,
+html.light .border-brand\/40 {
+  border-color: #3aa76d; /* solid brand border */
+}
+
+/* --- SOLID colored buttons/badges: force real white text on a dark-enough fill.
+   (text-white is remapped to dark for headings, which would make these
+   unreadable on red/green; restore white here.) --- */
+html.light .bg-brand {
+  background-color: #2c8255; /* darker green so white text passes contrast */
+  color: #ffffff;
+}
+html.light .hover\:bg-brand-sage:hover {
+  background-color: #24694a; /* darker hover */
+}
+html.light .bg-red-500 {
+  background-color: #dc2626; /* red-600 — deeper solid (unread badge etc.) */
+  color: #ffffff;
+}
+html.light .bg-red-600 {
+  color: #ffffff;
+}
+html.light .hover\:bg-red-500:hover {
+  background-color: #b91c1c; /* red-700 hover */
+}
