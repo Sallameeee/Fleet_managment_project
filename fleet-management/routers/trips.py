@@ -27,6 +27,9 @@ router = APIRouter(prefix="/trips", tags=["trips"])
 # a one-line tune. A ping within this distance of a stop counts as "at" it.
 GEOFENCE_RADIUS_M = 75
 
+# The org operates in Egypt (UTC+2); "today" for a driver's assignments is local.
+LOCAL_TZ = timezone(timedelta(hours=2))
+
 
 def _now_iso() -> str:
     """Current UTC instant as an ISO string (for started_at / ended_at)."""
@@ -91,6 +94,73 @@ def _enrich(trip: dict, driver_name=None, route_name=None,
         "vehicle_bus_number": vehicle_bus_number,
         "vehicle_share_token": share_token,  # the permanent per-vehicle link
     }
+
+
+@router.get("/my-assignments")
+def my_assignments(current_user: dict = Depends(require_role("driver"))):
+    """The signed-in DRIVER's own assignments for TODAY (org-scoped), enriched
+    with route + vehicle names, plus their current ACTIVE trip if one is running
+    (so the app can resume). Driver-facing counterpart to the manager-only
+    GET /assignments — a driver holds no management permissions, so this is gated
+    on WHO they are (require_role) and always scoped to their own driver_id.
+    """
+    org_id = current_user["org_id"]
+    driver_id = current_user["id"]
+    today = datetime.now(LOCAL_TZ).date().isoformat()
+
+    rows = (
+        supabase.table("assignments")
+        .select("id, route_id, vehicle_id, trip_date, shift_label, start_time, end_time")
+        .eq("org_id", org_id)
+        .eq("driver_id", driver_id)  # ALWAYS the caller — never from the request
+        .eq("trip_date", today)
+        .order("start_time", desc=False)
+        .execute()
+        .data
+    )
+
+    route_ids = list({r["route_id"] for r in rows if r.get("route_id")})
+    vehicle_ids = list({r["vehicle_id"] for r in rows if r.get("vehicle_id")})
+    routes, vehicles = {}, {}
+    if route_ids:
+        routes = {
+            x["id"]: x["name"]
+            for x in supabase.table("routes").select("id, name").in_("id", route_ids).execute().data
+        }
+    if vehicle_ids:
+        vehicles = {
+            x["id"]: x
+            for x in supabase.table("vehicles").select("id, bus_number").in_("id", vehicle_ids).execute().data
+        }
+
+    assignments = [
+        {
+            "assignment_id": r["id"],
+            "route_id": r.get("route_id"),
+            "route_name": routes.get(r.get("route_id")),
+            "vehicle_id": r.get("vehicle_id"),
+            "vehicle_bus_number": (vehicles.get(r.get("vehicle_id")) or {}).get("bus_number"),
+            "trip_date": r.get("trip_date"),
+            "shift_label": r.get("shift_label"),
+            "start_time": r.get("start_time"),
+            "end_time": r.get("end_time"),
+        }
+        for r in rows
+    ]
+
+    active = (
+        supabase.table("trips")
+        .select("*")
+        .eq("org_id", org_id)
+        .eq("driver_id", driver_id)
+        .eq("status", "active")
+        .limit(1)
+        .execute()
+        .data
+    )
+    active_trip = _enrich_one(active[0]) if active else None
+
+    return {"date": today, "assignments": assignments, "active_trip": active_trip}
 
 
 @router.post("/start", status_code=status.HTTP_201_CREATED)
