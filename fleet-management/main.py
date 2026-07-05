@@ -28,16 +28,16 @@ from routers import (
 
 app = FastAPI(title="routemind-fleet")
 
-# CORS: the admin dashboard (Next.js dev server) is a different origin, so the
-# browser needs these headers to allow its fetch() calls. localhost and
-# 127.0.0.1 are distinct origins to the browser, so allow both on port 3000.
+# CORS: permissive for now — the dashboard (web) and the driver/passenger mobile
+# apps all call this API from different origins. Auth is via a Bearer token in the
+# Authorization header (not cookies), so we don't need credentialed CORS; that's
+# why allow_credentials is False, which lets us safely use the "*" wildcard
+# (browsers reject "*" together with credentials). Tighten allow_origins to the
+# real domains once they're known.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-    ],
-    allow_credentials=True,
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
