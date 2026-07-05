@@ -60,6 +60,21 @@ body {
   border-left-width: 1px;
 }
 
+/* Toast pop-in animation (used by lib/toast.tsx). */
+@keyframes toastIn {
+  from { opacity: 0; transform: translateY(8px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+/* Mapbox must never inherit RTL: under a dir="rtl" ancestor the map's DOM
+   (controls, canvas positioning, popups/markers) lays out mirrored. Force the
+   whole map subtree back to LTR so the map itself is never flipped, even when
+   the surrounding page/panel is Arabic. */
+.mapboxgl-map,
+.mapboxgl-map * {
+  direction: ltr;
+}
+
 /* ============================================================================
    LIGHT-MODE SEMANTIC CONTRAST FIXES
    Dark mode is the default (:root) and is intentionally untouched. Every rule

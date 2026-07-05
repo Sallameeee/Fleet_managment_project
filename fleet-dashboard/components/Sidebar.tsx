@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
-export type NavItem = { href: string; label: string; badge?: number };
+export type NavItem = { href: string; label: string; badge?: number; group?: string };
 
 // Defaults = the super-admin nav, so existing `<Sidebar />` usage is unchanged.
 const DEFAULT_ITEMS: NavItem[] = [
@@ -37,26 +37,34 @@ export default function Sidebar({
       </div>
 
       <nav className="space-y-1">
-        {items.map((item) => {
+        {items.map((item, i) => {
           const active = item.href === activeHref;
+          // A group header renders before the first visible item of each group.
+          const showGroup = !!item.group && item.group !== items[i - 1]?.group;
           return (
-            <Link
-              key={item.href}
-              href={item.href}
-              className={
-                "flex items-center justify-between rounded-lg px-3 py-2 text-sm transition-colors " +
-                (active
-                  ? "bg-brand/15 font-medium text-brand-sage"
-                  : "text-slate-300 hover:bg-ink-800 hover:text-white")
-              }
-            >
-              <span>{item.label}</span>
-              {item.badge ? (
-                <span className="ml-2 inline-flex min-w-[1.25rem] items-center justify-center rounded-full bg-red-500 px-1.5 text-xs font-semibold text-white">
-                  {item.badge > 99 ? "99+" : item.badge}
-                </span>
-              ) : null}
-            </Link>
+            <div key={item.href}>
+              {showGroup && (
+                <div className={"px-3 pb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-600 " + (i === 0 ? "" : "pt-4")}>
+                  {item.group}
+                </div>
+              )}
+              <Link
+                href={item.href}
+                className={
+                  "flex items-center justify-between rounded-lg px-3 py-2 text-sm transition-colors " +
+                  (active
+                    ? "bg-brand/15 font-medium text-brand-sage"
+                    : "text-slate-300 hover:bg-ink-800 hover:text-white")
+                }
+              >
+                <span>{item.label}</span>
+                {item.badge ? (
+                  <span className="ml-2 inline-flex min-w-[1.25rem] items-center justify-center rounded-full bg-red-500 px-1.5 text-xs font-semibold text-white">
+                    {item.badge > 99 ? "99+" : item.badge}
+                  </span>
+                ) : null}
+              </Link>
+            </div>
           );
         })}
       </nav>

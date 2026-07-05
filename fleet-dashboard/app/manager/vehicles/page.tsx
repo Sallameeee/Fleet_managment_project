@@ -4,17 +4,22 @@ import { useCallback, useEffect, useState } from "react";
 import {
   listVehicles,
   createVehicle,
+  updateVehicle,
+  deleteVehicle,
   trackingUrl,
   type ManagerVehicle,
 } from "@/lib/manager";
 import { useT } from "@/lib/i18n";
+import { useToast } from "@/lib/toast";
 import Button from "@/components/Button";
 import Input from "@/components/Input";
 import Modal from "@/components/Modal";
 import StatusBadge from "@/components/StatusBadge";
+import { EditIcon, TrashIcon } from "@/components/RowIcons";
 
 export default function ManagerVehiclesPage() {
   const { t } = useT();
+  const toast = useToast();
   const [vehicles, setVehicles] = useState<ManagerVehicle[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -24,6 +29,11 @@ export default function ManagerVehiclesPage() {
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
+
+  const [editVehicle, setEditVehicle] = useState<ManagerVehicle | null>(null);
+  const [eForm, setEForm] = useState({ bus_number: "", plate_number: "", is_active: true });
+  const [saving, setSaving] = useState(false);
+  const [eError, setEError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -57,11 +67,46 @@ export default function ManagerVehiclesPage() {
         plate_number: form.plate_number.trim() || undefined,
       });
       setOpen(false);
+      toast.success(t("toast.created"));
       await load();
     } catch (err) {
       setCreateError(err instanceof Error ? err.message : t("common.failed"));
     } finally {
       setCreating(false);
+    }
+  }
+
+  function openEdit(v: ManagerVehicle) {
+    setEditVehicle(v);
+    setEForm({ bus_number: v.bus_number, plate_number: v.plate_number ?? "", is_active: v.is_active });
+    setEError(null);
+  }
+
+  async function handleEdit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!editVehicle) return;
+    setSaving(true);
+    setEError(null);
+    try {
+      await updateVehicle(editVehicle.id, { bus_number: eForm.bus_number.trim(), plate_number: eForm.plate_number.trim() || null, is_active: eForm.is_active });
+      setEditVehicle(null);
+      toast.success(t("toast.saved"));
+      await load();
+    } catch (err) {
+      setEError(err instanceof Error ? err.message : t("common.failed"));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleDelete(v: ManagerVehicle) {
+    if (!window.confirm(t("vehicles.deleteConfirm"))) return;
+    try {
+      await deleteVehicle(v.id);
+      toast.success(t("toast.deleted"));
+      await load();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : t("common.failed"));
     }
   }
 
@@ -104,11 +149,12 @@ export default function ManagerVehiclesPage() {
               <th className="px-4 py-3">{t("vehicles.plate")}</th>
               <th className="px-4 py-3">{t("common.status")}</th>
               <th className="px-4 py-3">{t("vehicles.trackingLink")}</th>
+              <th className="px-4 py-3 text-right">{t("common.actions")}</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-ink-800">
             {!loading && vehicles.length === 0 && !error && (
-              <tr><td colSpan={4} className="px-4 py-8 text-center text-slate-500">{t("common.none")}</td></tr>
+              <tr><td colSpan={5} className="px-4 py-8 text-center text-slate-500">{t("common.none")}</td></tr>
             )}
             {vehicles.map((v) => {
               const url = trackingUrl(v.share_token);
@@ -136,6 +182,12 @@ export default function ManagerVehiclesPage() {
                       </button>
                     </div>
                   </td>
+                  <td className="px-4 py-3">
+                    <div className="flex items-center justify-end gap-1.5">
+                      <button onClick={() => openEdit(v)} title={t("vehicles.editVehicle")} aria-label={t("vehicles.editVehicle")} className="rounded-md border border-ink-700 p-1.5 text-slate-300 hover:border-brand hover:text-white"><EditIcon /></button>
+                      <button onClick={() => handleDelete(v)} title={t("common.delete")} aria-label={t("common.delete")} className="rounded-md border border-red-500/40 p-1.5 text-red-300 hover:bg-red-500/10"><TrashIcon /></button>
+                    </div>
+                  </td>
                 </tr>
               );
             })}
@@ -153,6 +205,24 @@ export default function ManagerVehiclesPage() {
             <Button type="submit" loading={creating} className="w-auto px-6">{t("common.create")}</Button>
           </div>
         </form>
+      </Modal>
+
+      <Modal open={editVehicle !== null} onClose={() => setEditVehicle(null)} title={t("vehicles.editVehicle")}>
+        {editVehicle && (
+          <form onSubmit={handleEdit} className="space-y-3">
+            <Input label={`${t("vehicles.busNumber")} *`} value={eForm.bus_number} onChange={(e) => setEForm((f) => ({ ...f, bus_number: e.target.value }))} required />
+            <Input label={t("vehicles.plateNumber")} value={eForm.plate_number} onChange={(e) => setEForm((f) => ({ ...f, plate_number: e.target.value }))} />
+            <label className="flex items-center gap-2 text-sm text-slate-300">
+              <input type="checkbox" checked={eForm.is_active} onChange={(e) => setEForm((f) => ({ ...f, is_active: e.target.checked }))} className="h-4 w-4 accent-[#3AA76D]" />
+              {t("common.active")}
+            </label>
+            {eError && <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-300">{eError}</div>}
+            <div className="flex justify-end gap-2 pt-1">
+              <button type="button" onClick={() => setEditVehicle(null)} className="rounded-lg border border-ink-700 px-4 py-2 text-sm text-slate-300 hover:border-brand hover:text-white">{t("common.cancel")}</button>
+              <Button type="submit" loading={saving} className="w-auto px-6">{t("common.save")}</Button>
+            </div>
+          </form>
+        )}
       </Modal>
     </div>
   );

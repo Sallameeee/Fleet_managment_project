@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import { LangProvider } from "@/lib/i18n";
+import { ToastProvider } from "@/lib/toast";
 
 export const metadata: Metadata = {
   title: "Fleet Admin",
@@ -22,7 +23,9 @@ export default function RootLayout({
         />
       </head>
       <body className="min-h-screen bg-ink-950 text-slate-100 antialiased">
-        <LangProvider>{children}</LangProvider>
+        <LangProvider>
+          <ToastProvider>{children}</ToastProvider>
+        </LangProvider>
       </body>
     </html>
   );

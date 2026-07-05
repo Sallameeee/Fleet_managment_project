@@ -154,9 +154,89 @@ def me(current_user: dict = Depends(get_current_user)):
         "permissions": current_user.get("permissions"),
         "is_active": current_user.get("is_active"),
         "created_at": current_user.get("created_at"),
+        # Passenger app reads this to force a reset before anything else.
+        "must_change_password": current_user.get("must_change_password", False),
         # Present (and truthy) only when this is an impersonated session.
         "impersonation": current_user.get("impersonation"),
     }
+
+
+# --- Passenger auth (students on the passenger app) ---------------------------
+
+class PassengerLoginRequest(BaseModel):
+    email: str = Field(..., min_length=3, description="Passenger's email (their login).")
+    password: str = Field(..., min_length=1)
+
+
+@router.post("/passenger/login", tags=["passenger"])
+def passenger_login(body: PassengerLoginRequest):
+    """Authenticate a PASSENGER by email + password (they log in with their real
+    email). Verifies the account is a passenger profile, then returns the token
+    plus `must_change_password` so the app can force a first-login reset."""
+    try:
+        resp = httpx.post(
+            f"{SUPABASE_URL}/auth/v1/token",
+            params={"grant_type": "password"},
+            headers={"apikey": SUPABASE_ANON_KEY, "Content-Type": "application/json"},
+            json={"email": body.email, "password": body.password},
+            timeout=15,
+        )
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Authentication service is temporarily unavailable. Please try again.",
+        )
+    if resp.status_code != 200:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, INVALID_CREDENTIALS)
+
+    data = resp.json()
+    uid = (data.get("user") or {}).get("id")
+    if not uid:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, INVALID_CREDENTIALS)
+
+    prof = (
+        supabase.table("profiles")
+        .select("id, name, role, org_id, is_active, must_change_password")
+        .eq("id", uid)
+        .limit(1)
+        .execute()
+    )
+    # Same generic 401 if not found OR not a passenger — no account-type oracle.
+    if not prof.data or prof.data[0].get("role") != "passenger":
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, INVALID_CREDENTIALS)
+    profile = prof.data[0]
+    if profile.get("is_active") is False:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This account has been deactivated. Contact your administrator.",
+        )
+    return {
+        "access_token": data.get("access_token"),
+        "token_type": data.get("token_type", "bearer"),
+        "expires_in": data.get("expires_in"),
+        "user": {"id": profile["id"], "name": profile.get("name"), "role": "passenger", "org_id": profile.get("org_id")},
+        "must_change_password": bool(profile.get("must_change_password")),
+    }
+
+
+class ChangePasswordRequest(BaseModel):
+    new_password: str = Field(..., min_length=6)
+
+
+@router.post("/change-password")
+def change_password(
+    body: ChangePasswordRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """Set a new password for the CURRENT user and clear must_change_password.
+    Used by the passenger app to complete the forced first-login reset (works
+    for any authenticated user)."""
+    try:
+        supabase.auth.admin.update_user_by_id(current_user["id"], {"password": body.new_password})
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Could not change password: {exc}")
+    supabase.table("profiles").update({"must_change_password": False}).eq("id", current_user["id"]).execute()
+    return {"ok": True}
 
 
 # --- Super-admin auth (platform operators; separate from org users) -----------

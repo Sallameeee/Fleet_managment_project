@@ -93,20 +93,27 @@ def _km(meters: float) -> float:
     return round(meters / 1000.0, 2)
 
 
-def _build_report(org_id: str, org_name: str, types: list, d_from, d_to, label) -> dict:
+def _build_report(
+    org_id: str, org_name: str, types: list, d_from, d_to, label,
+    vehicle_id=None, driver_id=None,
+) -> dict:
     start_utc, end_utc = _utc_bounds(d_from, d_to)
 
     # --- Trips in the period, anchored on started_at (actual activity). Trips
-    # that never started have no started_at and won't match the range. ---
-    trips = (
+    # that never started have no started_at and won't match the range. An
+    # optional subject filter narrows to one vehicle or one driver. ---
+    trips_q = (
         supabase.table("trips")
         .select("id, driver_id, route_id, vehicle_id, status, started_at, ended_at")
         .eq("org_id", org_id)
         .gte("started_at", start_utc.isoformat())
         .lt("started_at", end_utc.isoformat())
-        .order("started_at", desc=False)
-        .execute()
-    ).data
+    )
+    if vehicle_id:
+        trips_q = trips_q.eq("vehicle_id", vehicle_id)
+    if driver_id:
+        trips_q = trips_q.eq("driver_id", driver_id)
+    trips = trips_q.order("started_at", desc=False).execute().data
     trip_ids = [t["id"] for t in trips]
 
     # Lookup maps.
@@ -295,14 +302,17 @@ def _build_report(org_id: str, org_name: str, types: list, d_from, d_to, label) 
     return report
 
 
-def _resolve_and_build(current_user, types, period, date_from, date_to):
+def _resolve_and_build(current_user, types, period, date_from, date_to, vehicle_id=None, driver_id=None):
     org_id = current_user["org_id"]
     type_list = _parse_types(types)
     d_from, d_to, label = _resolve_period(period, date_from, date_to)
 
     org_row = supabase.table("organizations").select("name").eq("id", org_id).limit(1).execute().data
     org_name = org_row[0]["name"] if org_row else "Organization"
-    return _build_report(org_id, org_name, type_list, d_from, d_to, label)
+    return _build_report(
+        org_id, org_name, type_list, d_from, d_to, label,
+        vehicle_id=vehicle_id, driver_id=driver_id,
+    )
 
 
 @router.get("")
@@ -312,8 +322,10 @@ def get_report(
     period: Optional[str] = Query(None, description="Preset: today|week|month"),
     date_from: Optional[date] = Query(None, description="Custom range start (YYYY-MM-DD)"),
     date_to: Optional[date] = Query(None, description="Custom range end (YYYY-MM-DD)"),
+    vehicle_id: Optional[str] = Query(None, description="Limit to one vehicle."),
+    driver_id: Optional[str] = Query(None, description="Limit to one driver."),
 ):
-    return _resolve_and_build(current_user, types, period, date_from, date_to)
+    return _resolve_and_build(current_user, types, period, date_from, date_to, vehicle_id, driver_id)
 
 
 @router.get("/pdf")
@@ -323,8 +335,10 @@ def get_report_pdf(
     period: Optional[str] = Query(None, description="Preset: today|week|month"),
     date_from: Optional[date] = Query(None, description="Custom range start (YYYY-MM-DD)"),
     date_to: Optional[date] = Query(None, description="Custom range end (YYYY-MM-DD)"),
+    vehicle_id: Optional[str] = Query(None, description="Limit to one vehicle."),
+    driver_id: Optional[str] = Query(None, description="Limit to one driver."),
 ):
-    report = _resolve_and_build(current_user, types, period, date_from, date_to)
+    report = _resolve_and_build(current_user, types, period, date_from, date_to, vehicle_id, driver_id)
     pdf_bytes = _render_pdf(report)
     fname = f"report_{report['period']['from']}_{report['period']['to']}.pdf"
     return Response(

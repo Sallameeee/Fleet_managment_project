@@ -1,36 +1,25 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import {
-  listRoutes,
-  createRoute,
-  type ManagerRoute,
-  type RouteStop,
-} from "@/lib/manager";
+import { listRoutes, type ManagerRoute } from "@/lib/manager";
+import { routeColor } from "@/lib/mapbox";
 import { useT } from "@/lib/i18n";
-import Button from "@/components/Button";
-import Input from "@/components/Input";
-import Modal from "@/components/Modal";
+import { useToast } from "@/lib/toast";
 import StatusBadge from "@/components/StatusBadge";
-
-function blankStop(order: number): RouteStop {
-  return { name: "", lat: 0, lng: 0, stop_order: order, dwell_minutes: 0 };
-}
+import RouteEditor from "@/components/RouteEditor";
+import RouteDetail from "@/components/RouteDetail";
+import RoutesOverview from "@/components/RoutesOverview";
 
 export default function ManagerRoutesPage() {
   const { t } = useT();
+  const toast = useToast();
   const [routes, setRoutes] = useState<ManagerRoute[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [viewRoute, setViewRoute] = useState<ManagerRoute | null>(null);
-
-  const [open, setOpen] = useState(false);
-  const [name, setName] = useState("");
-  const [totalKm, setTotalKm] = useState("");
-  const [estMin, setEstMin] = useState("");
-  const [stops, setStops] = useState<RouteStop[]>([blankStop(1)]);
-  const [creating, setCreating] = useState(false);
-  const [createError, setCreateError] = useState<string | null>(null);
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [editRoute, setEditRoute] = useState<ManagerRoute | null>(null);
+  const [overviewOpen, setOverviewOpen] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -42,58 +31,12 @@ export default function ManagerRoutesPage() {
     } finally {
       setLoading(false);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
     load();
   }, [load]);
-
-  function openModal() {
-    setName("");
-    setTotalKm("");
-    setEstMin("");
-    setStops([blankStop(1)]);
-    setCreateError(null);
-    setOpen(true);
-  }
-
-  function updateStop(i: number, field: keyof RouteStop, value: string) {
-    setStops((s) =>
-      s.map((st, idx) =>
-        idx === i
-          ? { ...st, [field]: field === "name" ? value : Number(value) }
-          : st,
-      ),
-    );
-  }
-
-  function addStop() {
-    setStops((s) => [...s, blankStop(s.length + 1)]);
-  }
-
-  function removeStop(i: number) {
-    setStops((s) => s.filter((_, idx) => idx !== i).map((st, idx) => ({ ...st, stop_order: idx + 1 })));
-  }
-
-  async function handleCreate(e: React.FormEvent) {
-    e.preventDefault();
-    setCreating(true);
-    setCreateError(null);
-    try {
-      await createRoute({
-        name: name.trim(),
-        total_km: totalKm ? Number(totalKm) : undefined,
-        est_minutes: estMin ? Number(estMin) : undefined,
-        stops: stops.filter((s) => s.name.trim()),
-      });
-      setOpen(false);
-      await load();
-    } catch (err) {
-      setCreateError(err instanceof Error ? err.message : t("common.failed"));
-    } finally {
-      setCreating(false);
-    }
-  }
 
   return (
     <div>
@@ -102,9 +45,21 @@ export default function ManagerRoutesPage() {
           <h1 className="text-2xl font-semibold text-white">{t("nav.routes")}</h1>
           <p className="text-sm text-slate-400">{loading ? t("common.loading") : `${routes.length}`}</p>
         </div>
-        <button onClick={openModal} className="rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-brand-sage">
-          + {t("routes.newRoute")}
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setOverviewOpen(true)}
+            disabled={routes.length === 0}
+            className="rounded-lg border border-ink-700 px-4 py-2 text-sm text-slate-300 transition-colors hover:border-brand hover:text-white disabled:opacity-40"
+          >
+            {t("routes.viewAll")}
+          </button>
+          <button
+            onClick={() => setEditorOpen(true)}
+            className="rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-brand-sage"
+          >
+            + {t("routes.newRoute")}
+          </button>
+        </div>
       </div>
 
       {error && (
@@ -128,9 +83,14 @@ export default function ManagerRoutesPage() {
             {!loading && routes.length === 0 && !error && (
               <tr><td colSpan={5} className="px-4 py-8 text-center text-slate-500">{t("common.none")}</td></tr>
             )}
-            {routes.map((r) => (
+            {routes.map((r, i) => (
               <tr key={r.id} onClick={() => setViewRoute(r)} className="cursor-pointer hover:bg-ink-900/40">
-                <td className="px-4 py-3 font-medium text-white">{r.name}</td>
+                <td className="px-4 py-3 font-medium text-white">
+                  <span className="inline-flex items-center gap-2">
+                    <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: routeColor(r.color, i) }} />
+                    {r.name}
+                  </span>
+                </td>
                 <td className="px-4 py-3 text-slate-300">{r.total_km ?? "—"}</td>
                 <td className="px-4 py-3 text-slate-300">{r.est_minutes ?? "—"}</td>
                 <td className="px-4 py-3 text-slate-400">{r.stops?.length ?? 0}</td>
@@ -141,68 +101,43 @@ export default function ManagerRoutesPage() {
         </table>
       </div>
 
-      {/* View stops */}
-      <Modal open={viewRoute !== null} onClose={() => setViewRoute(null)} title={viewRoute ? `${viewRoute.name} — ${t("routes.stops")}` : ""}>
-        {viewRoute && (
-          <ol className="space-y-2">
-            {[...viewRoute.stops].sort((a, b) => a.stop_order - b.stop_order).map((s) => (
-              <li key={`${s.stop_order}-${s.name}`} className="flex items-center justify-between rounded-lg border border-ink-800 px-3 py-2 text-sm">
-                <span className="text-white">{s.stop_order}. {s.name}</span>
-                <span className="text-slate-400">{s.lat}, {s.lng} · {t("routes.dwell")} {s.dwell_minutes}m</span>
-              </li>
-            ))}
-            {viewRoute.stops.length === 0 && <li className="text-slate-500">{t("routes.noStops")}</li>}
-          </ol>
-        )}
-      </Modal>
+      {/* Route detail (read-only map + timed stops, with Edit / Delete) */}
+      {viewRoute && (
+        <RouteDetail
+          route={viewRoute}
+          onClose={() => setViewRoute(null)}
+          onEdit={() => {
+            setEditRoute(viewRoute);
+            setViewRoute(null);
+          }}
+          onDeleted={() => {
+            setViewRoute(null);
+            toast.success(t("toast.deleted"));
+            load();
+          }}
+        />
+      )}
 
-      {/* New route */}
-      <Modal open={open} onClose={() => setOpen(false)} title={t("routes.newRoute")}>
-        <form onSubmit={handleCreate} className="space-y-3">
-          <Input label={`${t("common.name")} *`} value={name} onChange={(e) => setName(e.target.value)} required />
-          <div className="grid grid-cols-2 gap-3">
-            <Input label={t("routes.totalKm")} type="number" step="0.01" min={0} value={totalKm} onChange={(e) => setTotalKm(e.target.value)} />
-            <Input label={t("routes.estMinutes")} type="number" min={0} value={estMin} onChange={(e) => setEstMin(e.target.value)} />
-          </div>
+      {/* All-routes overview (read-only, each route in its color) */}
+      {overviewOpen && <RoutesOverview routes={routes} onClose={() => setOverviewOpen(false)} />}
 
-          <div>
-            <div className="mb-1 flex items-center justify-between">
-              <span className="text-sm font-medium text-slate-300">{t("routes.stops")}</span>
-              <span className="text-xs text-slate-500">{t("routes.mapPickerNote")}</span>
-            </div>
-            <div className="space-y-2">
-              {stops.map((s, i) => (
-                <div key={i} className="grid grid-cols-12 items-end gap-2 rounded-lg border border-ink-800 p-2">
-                  <div className="col-span-4">
-                    <label className="text-xs text-slate-500">{t("common.name")}</label>
-                    <input value={s.name} onChange={(e) => updateStop(i, "name", e.target.value)} className="w-full rounded-md border border-ink-700 bg-ink-850 px-2 py-1.5 text-sm text-slate-100 focus:border-brand focus:outline-none" />
-                  </div>
-                  <div className="col-span-3">
-                    <label className="text-xs text-slate-500">{t("routes.lat")}</label>
-                    <input type="number" step="any" value={s.lat} onChange={(e) => updateStop(i, "lat", e.target.value)} className="w-full rounded-md border border-ink-700 bg-ink-850 px-2 py-1.5 text-sm text-slate-100 focus:border-brand focus:outline-none" />
-                  </div>
-                  <div className="col-span-3">
-                    <label className="text-xs text-slate-500">{t("routes.lng")}</label>
-                    <input type="number" step="any" value={s.lng} onChange={(e) => updateStop(i, "lng", e.target.value)} className="w-full rounded-md border border-ink-700 bg-ink-850 px-2 py-1.5 text-sm text-slate-100 focus:border-brand focus:outline-none" />
-                  </div>
-                  <div className="col-span-1">
-                    <label className="text-xs text-slate-500">{t("routes.dwell")}</label>
-                    <input type="number" min={0} value={s.dwell_minutes} onChange={(e) => updateStop(i, "dwell_minutes", e.target.value)} className="w-full rounded-md border border-ink-700 bg-ink-850 px-2 py-1.5 text-sm text-slate-100 focus:border-brand focus:outline-none" />
-                  </div>
-                  <button type="button" onClick={() => removeStop(i)} className="col-span-1 rounded-md border border-red-500/40 py-1.5 text-xs text-red-300 hover:bg-red-500/10">✕</button>
-                </div>
-              ))}
-            </div>
-            <button type="button" onClick={addStop} className="mt-2 rounded-md border border-ink-700 px-3 py-1 text-xs text-slate-300 hover:border-brand hover:text-white">+ {t("routes.addStop")}</button>
-          </div>
-
-          {createError && <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-300">{createError}</div>}
-          <div className="flex justify-end gap-2 pt-1">
-            <button type="button" onClick={() => setOpen(false)} className="rounded-lg border border-ink-700 px-4 py-2 text-sm text-slate-300 hover:border-brand hover:text-white">{t("common.cancel")}</button>
-            <Button type="submit" loading={creating} className="w-auto px-6">{t("common.create")}</Button>
-          </div>
-        </form>
-      </Modal>
+      {/* Map-based route editor (create or edit) */}
+      {(editorOpen || editRoute) && (
+        <RouteEditor
+          route={editRoute ?? undefined}
+          onClose={() => {
+            setEditorOpen(false);
+            setEditRoute(null);
+          }}
+          onSaved={() => {
+            const editing = !!editRoute;
+            setEditorOpen(false);
+            setEditRoute(null);
+            toast.success(editing ? t("toast.saved") : t("toast.created"));
+            load();
+          }}
+        />
+      )}
     </div>
   );
 }

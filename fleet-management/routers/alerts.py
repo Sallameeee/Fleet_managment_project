@@ -52,6 +52,26 @@ def list_alerts(
     return {"count": len(enriched), "alerts": enriched}
 
 
+@router.post("/mark-all-read")
+def mark_all_read(
+    current_user: dict = Depends(require_permission("manage_trips")),
+):
+    """Mark every unread alert in the caller's org as read in one query.
+
+    A single UPDATE (is_read=false → true, org-scoped) beats looping one PATCH
+    per alert: one round-trip, atomic, and it can't partially fail across N rows.
+    """
+    org_id = current_user["org_id"]
+    result = (
+        supabase.table("alerts")
+        .update({"is_read": True})
+        .eq("org_id", org_id)
+        .eq("is_read", False)
+        .execute()
+    )
+    return {"updated": len(result.data or [])}
+
+
 @router.patch("/{alert_id}")
 def update_alert(
     alert_id: str,

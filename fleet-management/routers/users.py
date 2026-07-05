@@ -29,6 +29,7 @@ ROLE_DEFAULT_PERMISSIONS: Dict[str, list] = {
         "manage_devices",
         "manage_routes",
         "manage_trips",
+        "manage_passengers",
         "view_tracking",
         "view_reports",
     ],
@@ -178,3 +179,88 @@ def list_users(
     )
 
     return {"count": len(result.data), "users": result.data}
+
+
+class UserUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=1)
+    role: Optional[StaffRole] = None
+    is_active: Optional[bool] = None
+    permissions: Optional[Dict[str, bool]] = None
+
+
+@router.patch("/{user_id}")
+def update_user(
+    user_id: str,
+    body: UserUpdate,
+    current_user: dict = Depends(require_permission("manage_users")),
+):
+    """Edit a staff member's name/role/active/permissions.
+
+    Org-scoped (404 if the target isn't a staff member of the caller's org).
+    Same privilege-escalation guard as create: a caller can only grant a
+    permission flag they themselves hold (owners hold all).
+    """
+    org_id = current_user["org_id"]
+
+    existing = (
+        supabase.table("profiles")
+        .select("id, role")
+        .eq("id", user_id)
+        .eq("org_id", org_id)
+        .in_("role", STAFF_ROLES)
+        .limit(1)
+        .execute()
+    )
+    if not existing.data:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No staff user with id '{user_id}' exists in your organization.",
+        )
+
+    update: Dict = {}
+    if body.name is not None:
+        update["name"] = body.name
+    if body.role is not None:
+        update["role"] = body.role
+    if body.is_active is not None:
+        update["is_active"] = body.is_active
+    if body.permissions is not None:
+        is_owner = current_user.get("role") == "owner"
+        caller_perms = current_user.get("permissions") or {}
+        granted = {}
+        for flag, on in body.permissions.items():
+            if flag not in PERMISSION_KEYS or on is not True:
+                continue
+            if is_owner or caller_perms.get(flag) is True:
+                granted[flag] = True
+        update["permissions"] = granted
+
+    if not update:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No fields to update.",
+        )
+
+    try:
+        result = (
+            supabase.table("profiles")
+            .update(update)
+            .eq("id", user_id)
+            .eq("org_id", org_id)
+            .execute()
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Could not update user: {exc}",
+        )
+
+    u = result.data[0]
+    return {
+        "id": u["id"],
+        "name": u["name"],
+        "username": u["username"],
+        "role": u["role"],
+        "permissions": u["permissions"],
+        "is_active": u["is_active"],
+    }

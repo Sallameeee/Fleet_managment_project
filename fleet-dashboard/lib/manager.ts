@@ -162,6 +162,9 @@ export interface ManagerDriver {
   created_at?: string;
   online: boolean;
   current_vehicle: string | null;
+  license_number?: string | null;
+  license_start_date?: string | null;
+  license_expiry_date?: string | null;
 }
 
 export async function listDrivers(): Promise<ManagerDriver[]> {
@@ -176,6 +179,9 @@ export interface CreateDriverInput {
   password: string;
   phone?: string;
   email?: string;
+  license_number?: string;
+  license_start_date?: string;
+  license_expiry_date?: string;
 }
 
 export interface DriverCreateResult {
@@ -190,6 +196,25 @@ export async function createDriver(input: CreateDriverInput): Promise<DriverCrea
   const res = await managerFetch("/drivers", { method: "POST", body: JSON.stringify(input) });
   if (!res.ok) throw new Error(await extractError(res, "Failed to create driver."));
   return (await res.json()) as DriverCreateResult;
+}
+
+export interface UpdateDriverInput {
+  name?: string;
+  phone?: string | null;
+  is_active?: boolean;
+  license_number?: string | null;
+  license_start_date?: string | null;
+  license_expiry_date?: string | null;
+}
+
+export async function updateDriver(id: string, input: UpdateDriverInput): Promise<void> {
+  const res = await managerFetch(`/drivers/${id}`, { method: "PATCH", body: JSON.stringify(input) });
+  if (!res.ok) throw new Error(await extractError(res, "Failed to update driver."));
+}
+
+export async function deleteDriver(id: string): Promise<void> {
+  const res = await managerFetch(`/drivers/${id}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(await extractError(res, "Failed to delete driver."));
 }
 
 // --- Vehicles ----------------------------------------------------------------
@@ -218,6 +243,23 @@ export async function createVehicle(input: CreateVehicleInput): Promise<ManagerV
   const res = await managerFetch("/vehicles", { method: "POST", body: JSON.stringify(input) });
   if (!res.ok) throw new Error(await extractError(res, "Failed to create vehicle."));
   return (await res.json()) as ManagerVehicle;
+}
+
+export interface UpdateVehicleInput {
+  bus_number?: string;
+  plate_number?: string | null;
+  is_active?: boolean;
+}
+
+export async function updateVehicle(id: string, input: UpdateVehicleInput): Promise<ManagerVehicle> {
+  const res = await managerFetch(`/vehicles/${id}`, { method: "PATCH", body: JSON.stringify(input) });
+  if (!res.ok) throw new Error(await extractError(res, "Failed to update vehicle."));
+  return (await res.json()) as ManagerVehicle;
+}
+
+export async function deleteVehicle(id: string): Promise<void> {
+  const res = await managerFetch(`/vehicles/${id}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(await extractError(res, "Failed to delete vehicle."));
 }
 
 // --- Dashboard summary -------------------------------------------------------
@@ -267,6 +309,7 @@ export interface RouteStop {
   lng: number;
   stop_order: number;
   dwell_minutes: number;
+  arrival_time?: string | null; // "HH:MM"
 }
 
 export interface ManagerRoute {
@@ -274,6 +317,9 @@ export interface ManagerRoute {
   name: string;
   total_km: number | null;
   est_minutes: number | null;
+  start_time?: string | null;
+  color?: string | null;
+  geometry?: { type: "LineString"; coordinates: [number, number][] } | null;
   is_active: boolean;
   created_at?: string;
   stops: RouteStop[];
@@ -289,13 +335,28 @@ export interface CreateRouteInput {
   name: string;
   total_km?: number;
   est_minutes?: number;
+  start_time?: string; // "HH:MM" — departure of the first stop
+  color?: string; // hex line color
   stops: RouteStop[];
+  // GeoJSON LineString of the road-following path (from Mapbox Directions).
+  geometry?: { type: "LineString"; coordinates: [number, number][] };
 }
 
 export async function createRoute(input: CreateRouteInput): Promise<ManagerRoute> {
   const res = await managerFetch("/routes", { method: "POST", body: JSON.stringify(input) });
   if (!res.ok) throw new Error(await extractError(res, "Failed to create route."));
   return (await res.json()) as ManagerRoute;
+}
+
+export async function updateRoute(id: string, input: CreateRouteInput): Promise<ManagerRoute> {
+  const res = await managerFetch(`/routes/${id}`, { method: "PATCH", body: JSON.stringify(input) });
+  if (!res.ok) throw new Error(await extractError(res, "Failed to update route."));
+  return (await res.json()) as ManagerRoute;
+}
+
+export async function deleteRoute(id: string): Promise<void> {
+  const res = await managerFetch(`/routes/${id}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(await extractError(res, "Failed to delete route."));
 }
 
 // --- Assignments -------------------------------------------------------------
@@ -305,6 +366,7 @@ export interface ManagerAssignment {
   trip_date: string;
   shift_label: string | null;
   start_time: string | null;
+  end_time: string | null;
   driver_id: string;
   driver_name: string | null;
   route_id: string;
@@ -328,12 +390,62 @@ export interface CreateAssignmentInput {
   trip_date: string;
   shift_label?: string;
   start_time?: string;
+  end_time?: string;
+}
+
+// Structured 409 payload from the backend when a driver/vehicle is double-booked.
+export interface AssignmentConflict {
+  code: "conflict";
+  resource: "driver" | "vehicle";
+  name: string | null;
+  route_name: string | null;
+  start: string;
+  end: string;
+}
+
+export class AssignmentConflictError extends Error {
+  conflict: AssignmentConflict;
+  constructor(conflict: AssignmentConflict) {
+    super("assignment conflict");
+    this.name = "AssignmentConflictError";
+    this.conflict = conflict;
+  }
+}
+
+// Throw a structured conflict on 409, otherwise a plain Error.
+async function throwAssignmentError(res: Response, fallback: string): Promise<never> {
+  if (res.status === 409) {
+    try {
+      const data = await res.clone().json();
+      const d = data?.detail;
+      if (d && typeof d === "object" && d.code === "conflict") {
+        throw new AssignmentConflictError(d as AssignmentConflict);
+      }
+    } catch (e) {
+      if (e instanceof AssignmentConflictError) throw e;
+    }
+  }
+  throw new Error(await extractError(res, fallback));
 }
 
 export async function createAssignment(input: CreateAssignmentInput): Promise<ManagerAssignment> {
   const res = await managerFetch("/assignments", { method: "POST", body: JSON.stringify(input) });
-  if (!res.ok) throw new Error(await extractError(res, "Failed to create assignment."));
+  if (!res.ok) await throwAssignmentError(res, "Failed to create assignment.");
   return (await res.json()) as ManagerAssignment;
+}
+
+export async function updateAssignment(
+  id: string,
+  input: CreateAssignmentInput,
+): Promise<ManagerAssignment> {
+  const res = await managerFetch(`/assignments/${id}`, { method: "PATCH", body: JSON.stringify(input) });
+  if (!res.ok) await throwAssignmentError(res, "Failed to update assignment.");
+  return (await res.json()) as ManagerAssignment;
+}
+
+export async function deleteAssignment(id: string): Promise<void> {
+  const res = await managerFetch(`/assignments/${id}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(await extractError(res, "Failed to delete assignment."));
 }
 
 // --- Alerts ------------------------------------------------------------------
@@ -381,6 +493,13 @@ export async function markAlertRead(id: string, isRead = true): Promise<void> {
     body: JSON.stringify({ is_read: isRead }),
   });
   if (!res.ok) throw new Error(await extractError(res, "Failed to update alert."));
+}
+
+/** Mark every unread alert in the org as read; returns how many were updated. */
+export async function markAllAlertsRead(): Promise<number> {
+  const res = await managerFetch("/alerts/mark-all-read", { method: "POST" });
+  if (!res.ok) throw new Error(await extractError(res, "Failed to mark all as read."));
+  return (await res.json()).updated ?? 0;
 }
 
 // --- Alert rules -------------------------------------------------------------
@@ -444,6 +563,8 @@ export interface ReportParams {
   period?: string;
   date_from?: string;
   date_to?: string;
+  vehicle_id?: string;
+  driver_id?: string;
 }
 
 export interface ReportResponse {
@@ -490,6 +611,8 @@ function reportQuery(params: ReportParams): string {
   if (params.period) p.set("period", params.period);
   if (params.date_from) p.set("date_from", params.date_from);
   if (params.date_to) p.set("date_to", params.date_to);
+  if (params.vehicle_id) p.set("vehicle_id", params.vehicle_id);
+  if (params.driver_id) p.set("driver_id", params.driver_id);
   return p.toString();
 }
 
@@ -514,6 +637,109 @@ export async function downloadReportPdf(params: ReportParams): Promise<void> {
   window.URL.revokeObjectURL(url);
 }
 
+// --- Report schedules (email delivery deferred to Firebase phase) ------------
+
+export interface ReportSchedule {
+  id: string;
+  name: string | null;
+  frequency: "daily" | "weekly" | "monthly";
+  subject_kind: "all" | "vehicle" | "driver";
+  subject_id: string | null;
+  types: string; // comma list
+  period: string;
+  email: string;
+  is_active: boolean;
+  created_at?: string;
+}
+
+export interface CreateScheduleInput {
+  name?: string;
+  frequency: "daily" | "weekly" | "monthly";
+  subject_kind: "all" | "vehicle" | "driver";
+  subject_id?: string | null;
+  types: string[];
+  period: string;
+  email: string;
+}
+
+export async function listReportSchedules(): Promise<ReportSchedule[]> {
+  const res = await managerFetch("/report-schedules");
+  if (!res.ok) throw new Error(await extractError(res, "Failed to load schedules."));
+  return (await res.json()).schedules as ReportSchedule[];
+}
+
+export async function createReportSchedule(input: CreateScheduleInput): Promise<ReportSchedule> {
+  const res = await managerFetch("/report-schedules", { method: "POST", body: JSON.stringify(input) });
+  if (!res.ok) throw new Error(await extractError(res, "Failed to create schedule."));
+  return (await res.json()) as ReportSchedule;
+}
+
+export async function deleteReportSchedule(id: string): Promise<void> {
+  const res = await managerFetch(`/report-schedules/${id}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(await extractError(res, "Failed to delete schedule."));
+}
+
+// --- Staff users (managers / dispatchers / viewers) --------------------------
+
+// Org staff permission flags (mirrors the backend PERMISSION_KEYS).
+export const MANAGER_PERMISSIONS = [
+  "manage_users",
+  "manage_drivers",
+  "manage_vehicles",
+  "manage_devices",
+  "manage_routes",
+  "manage_trips",
+  "manage_passengers",
+  "view_tracking",
+  "view_reports",
+] as const;
+
+export type StaffRole = "manager" | "dispatcher" | "viewer";
+
+export interface ManagerUser {
+  id: string;
+  name: string;
+  username: string;
+  role: StaffRole;
+  permissions: Record<string, boolean> | null;
+  is_active: boolean;
+  created_at?: string;
+}
+
+export async function listUsers(): Promise<ManagerUser[]> {
+  const res = await managerFetch("/users");
+  if (!res.ok) throw new Error(await extractError(res, "Failed to load users."));
+  return (await res.json()).users as ManagerUser[];
+}
+
+export interface CreateUserInput {
+  name: string;
+  username: string;
+  password: string;
+  role: StaffRole;
+  phone?: string;
+  permissions?: Record<string, boolean>;
+}
+
+export async function createUser(input: CreateUserInput): Promise<ManagerUser> {
+  const res = await managerFetch("/users", { method: "POST", body: JSON.stringify(input) });
+  if (!res.ok) throw new Error(await extractError(res, "Failed to create user."));
+  return (await res.json()) as ManagerUser;
+}
+
+export interface UpdateUserInput {
+  name?: string;
+  role?: StaffRole;
+  is_active?: boolean;
+  permissions?: Record<string, boolean>;
+}
+
+export async function updateUser(id: string, input: UpdateUserInput): Promise<ManagerUser> {
+  const res = await managerFetch(`/users/${id}`, { method: "PATCH", body: JSON.stringify(input) });
+  if (!res.ok) throw new Error(await extractError(res, "Failed to update user."));
+  return (await res.json()) as ManagerUser;
+}
+
 // --- Live tracking (Full View) ----------------------------------------------
 
 export interface LiveDriver {
@@ -529,6 +755,238 @@ export async function getLiveDrivers(): Promise<LiveDriver[]> {
   const res = await managerFetch("/live/drivers");
   if (!res.ok) throw new Error(await extractError(res, "Failed to load live drivers."));
   return (await res.json()).drivers as LiveDriver[];
+}
+
+// Last-known positions for ALL drivers with recent activity (online + dimmed).
+export interface DriverPosition {
+  driver_id: string;
+  name: string | null;
+  vehicle_bus_number: string | null;
+  route_id: string | null;
+  route_name: string | null;
+  assignment_window: string | null; // "08:00–10:00" of the current assignment
+  assignment_count: number; // assignments scheduled today
+  position: { lat: number; lng: number; recorded_at: string } | null;
+  online: boolean;
+  on_trip: boolean;
+  last_ended_at: string | null;
+}
+
+export async function getDriverPositions(): Promise<DriverPosition[]> {
+  const res = await managerFetch("/live/positions");
+  if (!res.ok) throw new Error(await extractError(res, "Failed to load driver positions."));
+  return (await res.json()).drivers as DriverPosition[];
+}
+
+// --- Org centers (university / hubs) -----------------------------------------
+
+export interface OrgCenter {
+  id: string;
+  name: string;
+  lat: number;
+  lng: number;
+  is_primary: boolean;
+  created_at?: string;
+}
+
+export interface CenterInput {
+  name: string;
+  lat: number;
+  lng: number;
+  is_primary?: boolean;
+}
+
+export async function listCenters(): Promise<OrgCenter[]> {
+  const res = await managerFetch("/centers");
+  if (!res.ok) throw new Error(await extractError(res, "Failed to load centers."));
+  return (await res.json()).centers as OrgCenter[];
+}
+
+export async function createCenter(input: CenterInput): Promise<OrgCenter> {
+  const res = await managerFetch("/centers", { method: "POST", body: JSON.stringify(input) });
+  if (!res.ok) throw new Error(await extractError(res, "Failed to create center."));
+  return (await res.json()) as OrgCenter;
+}
+
+export async function updateCenter(id: string, input: Partial<CenterInput>): Promise<OrgCenter> {
+  const res = await managerFetch(`/centers/${id}`, { method: "PATCH", body: JSON.stringify(input) });
+  if (!res.ok) throw new Error(await extractError(res, "Failed to update center."));
+  return (await res.json()) as OrgCenter;
+}
+
+export async function deleteCenter(id: string): Promise<void> {
+  const res = await managerFetch(`/centers/${id}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(await extractError(res, "Failed to delete center."));
+}
+
+// --- Passengers (students) ---------------------------------------------------
+
+export interface ManagerPassenger {
+  id: string;
+  name: string | null;
+  email: string | null;
+  is_active: boolean;
+  university_id: string | null;
+  route_id: string | null;
+  route_name: string | null;
+}
+
+export interface CreatePassengerInput {
+  name: string;
+  email: string;
+  university_id?: string;
+  route_id: string;
+}
+
+export interface PassengerCreateResult {
+  email: string;
+  default_password: string;
+  must_change_password: boolean;
+}
+
+export async function listPassengers(): Promise<ManagerPassenger[]> {
+  const res = await managerFetch("/passengers");
+  if (!res.ok) throw new Error(await extractError(res, "Failed to load passengers."));
+  return (await res.json()).passengers as ManagerPassenger[];
+}
+
+export async function createPassenger(input: CreatePassengerInput): Promise<PassengerCreateResult> {
+  const res = await managerFetch("/passengers", { method: "POST", body: JSON.stringify(input) });
+  if (!res.ok) throw new Error(await extractError(res, "Failed to create passenger."));
+  return (await res.json()) as PassengerCreateResult;
+}
+
+export interface UpdatePassengerInput {
+  name?: string;
+  university_id?: string | null;
+  route_id?: string;
+  is_active?: boolean;
+}
+
+export async function updatePassenger(id: string, input: UpdatePassengerInput): Promise<void> {
+  const res = await managerFetch(`/passengers/${id}`, { method: "PATCH", body: JSON.stringify(input) });
+  if (!res.ok) throw new Error(await extractError(res, "Failed to update passenger."));
+}
+
+export async function deletePassenger(id: string): Promise<void> {
+  const res = await managerFetch(`/passengers/${id}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(await extractError(res, "Failed to delete passenger."));
+}
+
+export interface BulkPassengerRow {
+  name: string;
+  email: string;
+  university_id?: string;
+  route: string; // route id or name
+}
+
+export interface BulkResult {
+  created: number;
+  failed: number;
+  errors: { row: number; email: string; error: string }[];
+}
+
+export async function bulkCreatePassengers(rows: BulkPassengerRow[]): Promise<BulkResult> {
+  const res = await managerFetch("/passengers/bulk", { method: "POST", body: JSON.stringify({ rows }) });
+  if (!res.ok) throw new Error(await extractError(res, "Failed to upload passengers."));
+  return (await res.json()) as BulkResult;
+}
+
+// --- History (trips + pings over a range) ------------------------------------
+
+export interface HistoryPing {
+  lat: number;
+  lng: number;
+  recorded_at: string;
+}
+
+export interface HistoryTrip {
+  trip_id: string;
+  driver_id: string | null;
+  driver_name: string | null;
+  vehicle_id: string | null;
+  vehicle_bus_number: string | null;
+  route_id: string | null;
+  route_name: string | null;
+  route_geometry: { type: "LineString"; coordinates: [number, number][] } | null;
+  route_color: string | null;
+  status: string | null;
+  started_at: string | null;
+  ended_at: string | null;
+  pings: HistoryPing[];
+}
+
+export interface HistoryParams {
+  kind: "drivers" | "vehicles";
+  subject_id?: string;
+  date_from?: string;
+  date_to?: string;
+}
+
+export async function getHistory(params: HistoryParams): Promise<HistoryTrip[]> {
+  const p = new URLSearchParams();
+  p.set("kind", params.kind);
+  if (params.subject_id) p.set("subject_id", params.subject_id);
+  if (params.date_from) p.set("date_from", params.date_from);
+  if (params.date_to) p.set("date_to", params.date_to);
+  const res = await managerFetch(`/history?${p.toString()}`);
+  if (!res.ok) throw new Error(await extractError(res, "Failed to load history."));
+  return (await res.json()).trips as HistoryTrip[];
+}
+
+// --- Driver groups (persistent, nestable) -----------------------------------
+
+export interface GroupDriver {
+  driver_id: string;
+  name: string | null;
+}
+
+export interface DriverGroup {
+  id: string;
+  name: string;
+  parent_group_id: string | null;
+  drivers: GroupDriver[];
+  children: DriverGroup[];
+}
+
+export async function listDriverGroups(): Promise<DriverGroup[]> {
+  const res = await managerFetch("/driver-groups");
+  if (!res.ok) throw new Error(await extractError(res, "Failed to load groups."));
+  return (await res.json()).groups as DriverGroup[];
+}
+
+export async function createDriverGroup(name: string, parentGroupId?: string | null): Promise<void> {
+  const res = await managerFetch("/driver-groups", {
+    method: "POST",
+    body: JSON.stringify({ name, parent_group_id: parentGroupId ?? null }),
+  });
+  if (!res.ok) throw new Error(await extractError(res, "Failed to create group."));
+}
+
+export async function updateDriverGroup(
+  id: string,
+  patch: { name?: string; parent_group_id?: string | null },
+): Promise<void> {
+  const res = await managerFetch(`/driver-groups/${id}`, { method: "PATCH", body: JSON.stringify(patch) });
+  if (!res.ok) throw new Error(await extractError(res, "Failed to update group."));
+}
+
+export async function deleteDriverGroup(id: string): Promise<void> {
+  const res = await managerFetch(`/driver-groups/${id}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(await extractError(res, "Failed to delete group."));
+}
+
+export async function addDriverToGroup(groupId: string, driverId: string): Promise<void> {
+  const res = await managerFetch(`/driver-groups/${groupId}/members`, {
+    method: "POST",
+    body: JSON.stringify({ driver_id: driverId }),
+  });
+  if (!res.ok) throw new Error(await extractError(res, "Failed to add driver to group."));
+}
+
+export async function removeDriverFromGroup(groupId: string, driverId: string): Promise<void> {
+  const res = await managerFetch(`/driver-groups/${groupId}/members/${driverId}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(await extractError(res, "Failed to remove driver from group."));
 }
 
 // --- Settings: tracking hours ------------------------------------------------

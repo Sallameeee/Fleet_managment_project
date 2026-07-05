@@ -7,11 +7,17 @@ from routers import (
     alerts,
     assignments,
     auth,
+    centers,
     dashboard,
+    driver_groups,
     drivers,
     finance,
+    history,
     live,
     organizations,
+    passenger,
+    passengers,
+    report_schedules,
     reports,
     routes,
     tracking,
@@ -39,6 +45,8 @@ app.add_middleware(
 app.include_router(auth.router)
 app.include_router(organizations.router)
 app.include_router(drivers.router)
+app.include_router(driver_groups.router)
+app.include_router(centers.router)
 app.include_router(vehicles.router)
 app.include_router(users.router)
 app.include_router(routes.router)
@@ -47,11 +55,15 @@ app.include_router(trips.router)
 app.include_router(alert_rules.router)
 app.include_router(alerts.router)
 app.include_router(reports.router)
+app.include_router(report_schedules.router)
 app.include_router(tracking.router)
 app.include_router(finance.router)
 app.include_router(admin.router)
 app.include_router(dashboard.router)
 app.include_router(live.router)
+app.include_router(history.router)
+app.include_router(passengers.router)
+app.include_router(passenger.router)
 
 
 @app.get("/")

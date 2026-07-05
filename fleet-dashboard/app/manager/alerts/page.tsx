@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import {
   listAlerts,
   markAlertRead,
+  markAllAlertsRead,
   listAlertRules,
   createAlertRule,
   updateAlertRule,
@@ -16,6 +17,7 @@ import {
   type ManagerDriver,
 } from "@/lib/manager";
 import { useT } from "@/lib/i18n";
+import { useToast } from "@/lib/toast";
 import Button from "@/components/Button";
 import Input from "@/components/Input";
 import Modal from "@/components/Modal";
@@ -64,6 +66,7 @@ export default function ManagerAlertsPage() {
 
 function Feed() {
   const { t } = useT();
+  const toast = useToast();
   const [alerts, setAlerts] = useState<ManagerAlert[]>([]);
   const [fType, setFType] = useState("");
   const [fRead, setFRead] = useState("");
@@ -100,9 +103,22 @@ function Feed() {
       // Tell the layout to refresh the unread sidebar badge.
       window.dispatchEvent(new Event("fleet:alerts-changed"));
     } catch (e) {
-      alert(e instanceof Error ? e.message : t("common.failed"));
+      toast.error(e instanceof Error ? e.message : t("common.failed"));
     }
   }
+
+  async function handleMarkAll() {
+    try {
+      await markAllAlertsRead();
+      setAlerts((a) => a.map((x) => ({ ...x, is_read: true })));
+      window.dispatchEvent(new Event("fleet:alerts-changed"));
+      toast.success(t("toast.saved"));
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : t("common.failed"));
+    }
+  }
+
+  const hasUnread = alerts.some((a) => !a.is_read);
 
   return (
     <section>
@@ -117,6 +133,13 @@ function Feed() {
           <option value="read">{t("alerts.read")}</option>
         </select>
         <input type="date" value={fDate} onChange={(e) => setFDate(e.target.value)} className="rounded-lg border border-ink-700 bg-ink-850 px-2.5 py-1.5 text-sm text-slate-100" />
+        <button
+          onClick={handleMarkAll}
+          disabled={!hasUnread}
+          className="ms-auto rounded-lg border border-ink-700 px-3 py-1.5 text-sm text-slate-300 transition-colors hover:border-brand hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          {t("alerts.markAllRead")}
+        </button>
       </div>
 
       {error && <div className="mb-3 rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-300">{error}</div>}
@@ -161,10 +184,12 @@ function Feed() {
 
 function RulesManager() {
   const { t } = useT();
+  const toast = useToast();
   const [rules, setRules] = useState<AlertRule[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   const [open, setOpen] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [type, setType] = useState("speeding");
   const [threshold, setThreshold] = useState("");
@@ -188,31 +213,54 @@ function RulesManager() {
     reload();
   }, [reload]);
 
-  async function openModal() {
-    setName(""); setType("speeding"); setThreshold(""); setTargetKind("all"); setTargetIds([]); setCreateError(null);
-    setOpen(true);
+  async function loadTargets() {
     try {
       const [v, d] = await Promise.all([listVehicles(), listDrivers()]);
       setVehicles(v); setDrivers(d);
     } catch { /* targets stay empty */ }
   }
 
+  async function openCreate() {
+    setEditingId(null);
+    setName(""); setType("speeding"); setThreshold(""); setTargetKind("all"); setTargetIds([]); setCreateError(null);
+    setOpen(true);
+    await loadTargets();
+  }
+
+  async function openEdit(r: AlertRule) {
+    setEditingId(r.id);
+    setName(r.name);
+    setType(r.type);
+    setThreshold(r.threshold != null ? String(r.threshold) : "");
+    setTargetKind(r.target_kind);
+    setTargetIds(r.target_ids ?? []);
+    setCreateError(null);
+    setOpen(true);
+    await loadTargets();
+  }
+
   function toggleId(id: string) {
     setTargetIds((ids) => (ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id]));
   }
 
-  async function handleCreate(e: React.FormEvent) {
+  async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setCreating(true); setCreateError(null);
     try {
-      await createAlertRule({
+      const fields = {
         name: name.trim(), type,
         threshold: type === "short_stop" ? null : threshold ? Number(threshold) : null,
         target_kind: targetKind,
         target_ids: targetKind === "all" ? null : targetIds,
-        notify_panel: true, notify_email: false, notify_push: false, is_active: true,
-      });
-      setOpen(false); await reload();
+      };
+      if (editingId) {
+        await updateAlertRule(editingId, fields);
+      } else {
+        await createAlertRule({ ...fields, notify_panel: true, notify_email: false, notify_push: false, is_active: true });
+      }
+      setOpen(false);
+      toast.success(editingId ? t("toast.saved") : t("toast.created"));
+      await reload();
     } catch (err) {
       setCreateError(err instanceof Error ? err.message : t("common.failed"));
     } finally {
@@ -221,20 +269,20 @@ function RulesManager() {
   }
 
   async function toggleRule(r: AlertRule) {
-    try { await updateAlertRule(r.id, { is_active: !r.is_active }); await reload(); }
-    catch (e) { alert(e instanceof Error ? e.message : t("common.failed")); }
+    try { await updateAlertRule(r.id, { is_active: !r.is_active }); await reload(); toast.success(t("toast.saved")); }
+    catch (e) { toast.error(e instanceof Error ? e.message : t("common.failed")); }
   }
   async function removeRule(r: AlertRule) {
     if (!window.confirm(`${t("common.delete")} "${r.name}"?`)) return;
-    try { await deleteAlertRule(r.id); await reload(); }
-    catch (e) { alert(e instanceof Error ? e.message : t("common.failed")); }
+    try { await deleteAlertRule(r.id); await reload(); toast.success(t("toast.deleted")); }
+    catch (e) { toast.error(e instanceof Error ? e.message : t("common.failed")); }
   }
 
   return (
     <section>
       <div className="mb-3 flex items-center justify-between">
         <h2 className="text-lg font-semibold text-white">{t("alerts.rulesTitle")}</h2>
-        <button onClick={openModal} className="rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-brand-sage">+ {t("alerts.newRule")}</button>
+        <button onClick={openCreate} className="rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-brand-sage">+ {t("alerts.newRule")}</button>
       </div>
 
       {error && <div className="mb-3 rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-300">{error}</div>}
@@ -264,8 +312,15 @@ function RulesManager() {
                     {r.is_active ? t("common.active") : t("alerts.ruleOff")}
                   </button>
                 </td>
-                <td className="px-4 py-3 text-right">
-                  <button onClick={() => removeRule(r)} className="rounded-md border border-red-500/40 px-2.5 py-1 text-xs text-red-300 hover:bg-red-500/10">{t("common.delete")}</button>
+                <td className="px-4 py-3">
+                  <div className="flex items-center justify-end gap-1.5">
+                    <button onClick={() => openEdit(r)} title={t("alerts.editRule")} aria-label={t("alerts.editRule")} className="rounded-md border border-ink-700 p-1.5 text-slate-300 hover:border-brand hover:text-white">
+                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4Z" /></svg>
+                    </button>
+                    <button onClick={() => removeRule(r)} title={t("common.delete")} aria-label={t("common.delete")} className="rounded-md border border-red-500/40 p-1.5 text-red-300 hover:bg-red-500/10">
+                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></svg>
+                    </button>
+                  </div>
                 </td>
               </tr>
             ))}
@@ -273,8 +328,8 @@ function RulesManager() {
         </table>
       </div>
 
-      <Modal open={open} onClose={() => setOpen(false)} title={t("alerts.newRule")}>
-        <form onSubmit={handleCreate} className="space-y-3">
+      <Modal open={open} onClose={() => setOpen(false)} title={editingId ? t("alerts.editRule") : t("alerts.newRule")}>
+        <form onSubmit={handleSubmit} className="space-y-3">
           <Input label={`${t("common.name")} *`} value={name} onChange={(e) => setName(e.target.value)} required />
           <div className="grid grid-cols-2 gap-3">
             <label className="block">
@@ -321,7 +376,7 @@ function RulesManager() {
           {createError && <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-300">{createError}</div>}
           <div className="flex justify-end gap-2 pt-1">
             <button type="button" onClick={() => setOpen(false)} className="rounded-lg border border-ink-700 px-4 py-2 text-sm text-slate-300 hover:border-brand hover:text-white">{t("common.cancel")}</button>
-            <Button type="submit" loading={creating} className="w-auto px-6">{t("common.create")}</Button>
+            <Button type="submit" loading={creating} className="w-auto px-6">{editingId ? t("common.save") : t("common.create")}</Button>
           </div>
         </form>
       </Modal>

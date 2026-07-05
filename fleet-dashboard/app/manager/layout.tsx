@@ -18,17 +18,18 @@ import ThemeToggle from "@/components/ThemeToggle";
 import LanguageSwitcher from "@/components/LanguageSwitcher";
 
 // Each nav item: href, translation key for the label, required permission.
-const MANAGER_NAV: { href: string; key: string; perm?: string }[] = [
-  { href: "/manager", key: "nav.dashboard" },
-  { href: "/manager/full-view", key: "nav.fullView", perm: "view_tracking" },
-  { href: "/manager/drivers", key: "nav.drivers", perm: "manage_drivers" },
-  { href: "/manager/vehicles", key: "nav.vehicles", perm: "manage_vehicles" },
-  { href: "/manager/routes", key: "nav.routes", perm: "manage_routes" },
-  { href: "/manager/assignments", key: "nav.assignments", perm: "manage_trips" },
-  { href: "/manager/trips", key: "nav.trips", perm: "manage_trips" },
-  { href: "/manager/alerts", key: "nav.alerts", perm: "manage_trips" },
-  { href: "/manager/reports", key: "nav.reports", perm: "view_reports" },
-  { href: "/manager/settings", key: "nav.settings", perm: "manage_settings" },
+const MANAGER_NAV: { href: string; key: string; perm?: string; group: string }[] = [
+  { href: "/manager", key: "nav.dashboard", group: "nav.grpMonitoring" },
+  { href: "/manager/full-view", key: "nav.fullView", perm: "view_tracking", group: "nav.grpMonitoring" },
+  { href: "/manager/history", key: "nav.history", perm: "view_tracking", group: "nav.grpMonitoring" },
+  { href: "/manager/drivers", key: "nav.drivers", perm: "manage_drivers", group: "nav.grpManagement" },
+  { href: "/manager/vehicles", key: "nav.vehicles", perm: "manage_vehicles", group: "nav.grpManagement" },
+  { href: "/manager/routes", key: "nav.routes", perm: "manage_routes", group: "nav.grpManagement" },
+  { href: "/manager/assignments", key: "nav.assignments", perm: "manage_trips", group: "nav.grpManagement" },
+  { href: "/manager/passengers", key: "nav.passengers", perm: "manage_passengers", group: "nav.grpManagement" },
+  { href: "/manager/alerts", key: "nav.alerts", perm: "manage_trips", group: "nav.grpOperations" },
+  { href: "/manager/reports", key: "nav.reports", perm: "view_reports", group: "nav.grpOperations" },
+  { href: "/manager/settings", key: "nav.settings", perm: "manage_settings", group: "nav.grpOperations" },
 ];
 
 export default function ManagerLayout({ children }: { children: React.ReactNode }) {
@@ -82,6 +83,7 @@ export default function ManagerLayout({ children }: { children: React.ReactNode 
     href: n.href,
     label: t(n.key),
     badge: n.href === "/manager/alerts" ? unread : undefined,
+    group: t(n.group),
   }));
 
   const slug = getManagerSlug();

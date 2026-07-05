@@ -14,6 +14,7 @@ PERMISSION_KEYS = [
     "manage_devices",
     "manage_routes",
     "manage_trips",
+    "manage_passengers",
     "view_tracking",
     "view_reports",
     "manage_billing",

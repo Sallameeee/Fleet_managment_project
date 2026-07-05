@@ -30,6 +30,109 @@ class AssignmentCreate(BaseModel):
     trip_date: date
     shift_label: Optional[str] = None
     start_time: Optional[time] = None
+    end_time: Optional[time] = None
+
+
+# Update = full replace of the same fields as create.
+class AssignmentUpdate(AssignmentCreate):
+    pass
+
+
+def _parse_hm(value: Optional[str]) -> Optional[time]:
+    """Parse a stored 'HH:MM[:SS]' time string into a time, or None."""
+    if not value:
+        return None
+    try:
+        parts = value.split(":")
+        return time(int(parts[0]), int(parts[1]))
+    except (ValueError, IndexError):
+        return None
+
+
+def _name_of(table: str, record_id: str, column: str) -> Optional[str]:
+    """Fetch a single display field (e.g. a driver name) for a message."""
+    try:
+        res = supabase.table(table).select(column).eq("id", record_id).limit(1).execute()
+        return res.data[0][column] if res.data else None
+    except Exception:
+        return None
+
+
+def _assert_no_conflict(
+    org_id: str,
+    driver_id: str,
+    vehicle_id: str,
+    trip_date_iso: str,
+    start: Optional[time],
+    end: Optional[time],
+    exclude_id: Optional[str] = None,
+) -> None:
+    """Reject a double-booking of the SAME driver or vehicle for an overlapping
+    time window on the same date within the org — enforced server-side.
+
+    Overlap test (standard half-open interval intersection):
+        startA < endB  AND  startB < endA
+    which is true iff the two [start, end) windows intersect. Same trip_date,
+    same org, excluding the assignment being edited. Rows without a full window
+    can't be compared, so they're skipped.
+    """
+    if start is None or end is None:
+        return  # no window to compare — nothing to enforce
+    if end <= start:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="End time must be after start time.",
+        )
+
+    rows = (
+        supabase.table("assignments")
+        .select("id, driver_id, vehicle_id, route_id, start_time, end_time")
+        .eq("org_id", org_id)
+        .eq("trip_date", trip_date_iso)
+        .execute()
+        .data
+    )
+    for r in rows:
+        if exclude_id and r["id"] == exclude_id:
+            continue
+        rs = _parse_hm(r.get("start_time"))
+        re = _parse_hm(r.get("end_time"))
+        if rs is None or re is None:
+            continue  # existing row has no window — can't prove an overlap
+        if not (start < re and rs < end):
+            continue  # windows don't intersect
+
+        same_driver = r["driver_id"] == driver_id
+        same_vehicle = r["vehicle_id"] == vehicle_id
+        if not (same_driver or same_vehicle):
+            continue
+
+        win_start = rs.strftime("%H:%M")
+        win_end = re.strftime("%H:%M")
+        # Driver clash takes priority in the message (people-first).
+        if same_driver:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "conflict",
+                    "resource": "driver",
+                    "name": _name_of("profiles", driver_id, "name"),
+                    "route_name": _name_of("routes", r["route_id"], "name"),
+                    "start": win_start,
+                    "end": win_end,
+                },
+            )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "conflict",
+                "resource": "vehicle",
+                "name": _name_of("vehicles", vehicle_id, "bus_number"),
+                "route_name": _name_of("routes", r["route_id"], "name"),
+                "start": win_start,
+                "end": win_end,
+            },
+        )
 
 
 def _verify_belongs_to_org(
@@ -88,6 +191,13 @@ def create_assignment(
     route = _verify_belongs_to_org("routes", body.route_id, org_id, "route")
     vehicle = _verify_belongs_to_org("vehicles", body.vehicle_id, org_id, "vehicle")
 
+    # --- CRITICAL: reject double-booking the driver or vehicle for an
+    # overlapping window on this date (409 with a helpful message). ---
+    _assert_no_conflict(
+        org_id, body.driver_id, body.vehicle_id, body.trip_date.isoformat(),
+        body.start_time, body.end_time,
+    )
+
     # Pydantic gives us date/time objects; serialize to ISO strings for JSON.
     payload = {
         "org_id": org_id,  # caller's org, NOT from the body
@@ -97,6 +207,7 @@ def create_assignment(
         "trip_date": body.trip_date.isoformat(),
         "shift_label": body.shift_label,
         "start_time": body.start_time.isoformat() if body.start_time else None,
+        "end_time": body.end_time.isoformat() if body.end_time else None,
     }
 
     try:
@@ -115,6 +226,7 @@ def create_assignment(
         "trip_date": a["trip_date"],
         "shift_label": a["shift_label"],
         "start_time": a["start_time"],
+        "end_time": a.get("end_time"),
         "driver_id": a["driver_id"],
         "driver_name": driver["name"],
         "route_id": a["route_id"],
@@ -123,6 +235,81 @@ def create_assignment(
         "vehicle_bus_number": vehicle["bus_number"],
         "created_at": a["created_at"],
     }
+
+
+@router.patch("/{assignment_id}")
+def update_assignment(
+    assignment_id: str,
+    body: AssignmentUpdate,
+    current_user: dict = Depends(require_permission("manage_trips")),
+):
+    org_id = current_user["org_id"]
+
+    # Ownership: the assignment must belong to the caller's org (404 otherwise).
+    _verify_belongs_to_org("assignments", assignment_id, org_id, "assignment")
+
+    # Re-verify the three referenced ids belong to this org.
+    driver = _verify_belongs_to_org(
+        "profiles", body.driver_id, org_id, "driver", extra_eq={"role": "driver"}
+    )
+    route = _verify_belongs_to_org("routes", body.route_id, org_id, "route")
+    vehicle = _verify_belongs_to_org("vehicles", body.vehicle_id, org_id, "vehicle")
+
+    # Conflict check EXCLUDING this assignment (so keeping its own window is ok).
+    _assert_no_conflict(
+        org_id, body.driver_id, body.vehicle_id, body.trip_date.isoformat(),
+        body.start_time, body.end_time, exclude_id=assignment_id,
+    )
+
+    payload = {
+        "driver_id": body.driver_id,
+        "route_id": body.route_id,
+        "vehicle_id": body.vehicle_id,
+        "trip_date": body.trip_date.isoformat(),
+        "shift_label": body.shift_label,
+        "start_time": body.start_time.isoformat() if body.start_time else None,
+        "end_time": body.end_time.isoformat() if body.end_time else None,
+    }
+    try:
+        result = (
+            supabase.table("assignments")
+            .update(payload)
+            .eq("id", assignment_id)
+            .eq("org_id", org_id)  # doubly enforce ownership
+            .execute()
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Could not update assignment: {exc}",
+        )
+
+    a = result.data[0]
+    return {
+        "id": a["id"],
+        "trip_date": a["trip_date"],
+        "shift_label": a["shift_label"],
+        "start_time": a["start_time"],
+        "end_time": a.get("end_time"),
+        "driver_id": a["driver_id"],
+        "driver_name": driver["name"],
+        "route_id": a["route_id"],
+        "route_name": route["name"],
+        "vehicle_id": a["vehicle_id"],
+        "vehicle_bus_number": vehicle["bus_number"],
+        "created_at": a["created_at"],
+    }
+
+
+@router.delete("/{assignment_id}", status_code=status.HTTP_200_OK)
+def delete_assignment(
+    assignment_id: str,
+    current_user: dict = Depends(require_permission("manage_trips")),
+):
+    org_id = current_user["org_id"]
+    _verify_belongs_to_org("assignments", assignment_id, org_id, "assignment")
+    supabase.table("assignments").delete().eq("id", assignment_id).eq("org_id", org_id).execute()
+    return {"deleted": assignment_id}
 
 
 @router.get("")
@@ -138,7 +325,7 @@ def list_assignments(
     org_id = current_user["org_id"]
 
     query = supabase.table("assignments").select(
-        "id, driver_id, route_id, vehicle_id, trip_date, shift_label, start_time, created_at"
+        "id, driver_id, route_id, vehicle_id, trip_date, shift_label, start_time, end_time, created_at"
     ).eq("org_id", org_id)
 
     if trip_date is not None:
@@ -189,6 +376,7 @@ def list_assignments(
             "trip_date": a["trip_date"],
             "shift_label": a["shift_label"],
             "start_time": a["start_time"],
+            "end_time": a.get("end_time"),
             "driver_id": a["driver_id"],
             "driver_name": drivers.get(a["driver_id"]),
             "route_id": a["route_id"],
