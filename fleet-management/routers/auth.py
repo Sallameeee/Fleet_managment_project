@@ -64,6 +64,8 @@ def login(body: LoginRequest):
         org_result = None
 
     if not org_result or not org_result.data:
+        import logging  # TEMP DIAGNOSTIC — remove after debugging
+        logging.getLogger("auth").warning("LOGIN DIAG step=org-not-found slug=%s", org_slug)
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, INVALID_CREDENTIALS)
     org_id = org_result.data[0]["id"]
     org_status = org_result.data[0].get("status")
@@ -81,12 +83,16 @@ def login(body: LoginRequest):
         prof_result = None
 
     if not prof_result or not prof_result.data:
+        import logging  # TEMP DIAGNOSTIC — remove after debugging
+        logging.getLogger("auth").warning("LOGIN DIAG step=profile-not-found org=%s username=%s", org_id, username)
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, INVALID_CREDENTIALS)
     profile = prof_result.data[0]
 
     login_email = profile.get("email")
     if not login_email:
         # No stored login email — cannot authenticate this account.
+        import logging  # TEMP DIAGNOSTIC — remove after debugging
+        logging.getLogger("auth").warning("LOGIN DIAG step=no-login-email profile_id=%s", profile.get("id"))
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, INVALID_CREDENTIALS)
 
     # Supabase password grant, using the public anon key.
@@ -105,6 +111,18 @@ def login(body: LoginRequest):
         )
 
     if resp.status_code != 200:
+        # TEMP DIAGNOSTIC — remove after debugging. Logs what Supabase returned
+        # (status + first 150 chars of body), the project host we called, and the
+        # anon-key LENGTH (length only — not the key). No secrets.
+        import logging
+        from urllib.parse import urlparse
+        logging.getLogger("auth").warning(
+            "LOGIN DIAG step=grant status=%s project=%s anon_key_len=%s body=%s",
+            resp.status_code,
+            urlparse(SUPABASE_URL).netloc,
+            len(SUPABASE_ANON_KEY or ""),
+            resp.text[:150],
+        )
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, INVALID_CREDENTIALS)
 
     # Credentials valid — block deactivated accounts.
