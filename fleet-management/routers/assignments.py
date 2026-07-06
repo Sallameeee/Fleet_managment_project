@@ -24,13 +24,16 @@ router = APIRouter(prefix="/assignments", tags=["assignments"])
 
 
 class AssignmentCreate(BaseModel):
-    driver_id: str = Field(..., min_length=1)
+    driver_id: str = Field(..., min_length=1)  # the app user (a "supervisor" in school orgs)
     route_id: str = Field(..., min_length=1)
     vehicle_id: str = Field(..., min_length=1)
     trip_date: date
     shift_label: Optional[str] = None
     start_time: Optional[time] = None
     end_time: Optional[time] = None
+    # School module: link to a bus_drivers row (the physical bus driver; optional).
+    # University orgs simply never send it.
+    bus_driver_id: Optional[str] = None
 
 
 # Update = full replace of the same fields as create.
@@ -190,6 +193,11 @@ def create_assignment(
     )
     route = _verify_belongs_to_org("routes", body.route_id, org_id, "route")
     vehicle = _verify_belongs_to_org("vehicles", body.vehicle_id, org_id, "vehicle")
+    # School module: optional bus driver (verified to be in the caller's org).
+    bus_driver = (
+        _verify_belongs_to_org("bus_drivers", body.bus_driver_id, org_id, "bus driver")
+        if body.bus_driver_id else None
+    )
 
     # --- CRITICAL: reject double-booking the driver or vehicle for an
     # overlapping window on this date (409 with a helpful message). ---
@@ -208,6 +216,7 @@ def create_assignment(
         "shift_label": body.shift_label,
         "start_time": body.start_time.isoformat() if body.start_time else None,
         "end_time": body.end_time.isoformat() if body.end_time else None,
+        "bus_driver_id": body.bus_driver_id,
     }
 
     try:
@@ -233,6 +242,9 @@ def create_assignment(
         "route_name": route["name"],
         "vehicle_id": a["vehicle_id"],
         "vehicle_bus_number": vehicle["bus_number"],
+        "bus_driver_id": a.get("bus_driver_id"),
+        "bus_driver_name": bus_driver["name"] if bus_driver else None,
+        "bus_driver_phone": bus_driver.get("phone") if bus_driver else None,
         "created_at": a["created_at"],
     }
 
@@ -254,6 +266,10 @@ def update_assignment(
     )
     route = _verify_belongs_to_org("routes", body.route_id, org_id, "route")
     vehicle = _verify_belongs_to_org("vehicles", body.vehicle_id, org_id, "vehicle")
+    bus_driver = (
+        _verify_belongs_to_org("bus_drivers", body.bus_driver_id, org_id, "bus driver")
+        if body.bus_driver_id else None
+    )
 
     # Conflict check EXCLUDING this assignment (so keeping its own window is ok).
     _assert_no_conflict(
@@ -269,6 +285,7 @@ def update_assignment(
         "shift_label": body.shift_label,
         "start_time": body.start_time.isoformat() if body.start_time else None,
         "end_time": body.end_time.isoformat() if body.end_time else None,
+        "bus_driver_id": body.bus_driver_id,
     }
     try:
         result = (
@@ -297,6 +314,9 @@ def update_assignment(
         "route_name": route["name"],
         "vehicle_id": a["vehicle_id"],
         "vehicle_bus_number": vehicle["bus_number"],
+        "bus_driver_id": a.get("bus_driver_id"),
+        "bus_driver_name": bus_driver["name"] if bus_driver else None,
+        "bus_driver_phone": bus_driver.get("phone") if bus_driver else None,
         "created_at": a["created_at"],
     }
 
@@ -325,7 +345,8 @@ def list_assignments(
     org_id = current_user["org_id"]
 
     query = supabase.table("assignments").select(
-        "id, driver_id, route_id, vehicle_id, trip_date, shift_label, start_time, end_time, created_at"
+        "id, driver_id, route_id, vehicle_id, trip_date, shift_label, start_time, end_time, "
+        "bus_driver_id, created_at"
     ).eq("org_id", org_id)
 
     if trip_date is not None:
@@ -341,10 +362,20 @@ def list_assignments(
     driver_ids = {a["driver_id"] for a in assignments}
     route_ids = {a["route_id"] for a in assignments}
     vehicle_ids = {a["vehicle_id"] for a in assignments}
+    bus_driver_ids = {a["bus_driver_id"] for a in assignments if a.get("bus_driver_id")}
 
     drivers = {}
     routes = {}
     vehicles = {}
+    bus_drivers = {}  # id -> {name, phone}
+    if bus_driver_ids:
+        rows = (
+            supabase.table("bus_drivers")
+            .select("id, name, phone")
+            .in_("id", list(bus_driver_ids))
+            .execute()
+        )
+        bus_drivers = {r["id"]: r for r in rows.data}
     if driver_ids:
         rows = (
             supabase.table("profiles")
@@ -383,6 +414,9 @@ def list_assignments(
             "route_name": routes.get(a["route_id"]),
             "vehicle_id": a["vehicle_id"],
             "vehicle_bus_number": vehicles.get(a["vehicle_id"]),
+            "bus_driver_id": a.get("bus_driver_id"),
+            "bus_driver_name": (bus_drivers.get(a.get("bus_driver_id")) or {}).get("name"),
+            "bus_driver_phone": (bus_drivers.get(a.get("bus_driver_id")) or {}).get("phone"),
             "created_at": a["created_at"],
         }
         for a in assignments

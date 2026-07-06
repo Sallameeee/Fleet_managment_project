@@ -13,21 +13,26 @@ import {
   type Impersonation,
 } from "@/lib/manager";
 import { useT } from "@/lib/i18n";
+import { ModuleProvider } from "@/lib/module";
 import Sidebar, { type NavItem } from "@/components/Sidebar";
 import ThemeToggle from "@/components/ThemeToggle";
 import LanguageSwitcher from "@/components/LanguageSwitcher";
 
 // Each nav item: href, translation key for the label, required permission.
-const MANAGER_NAV: { href: string; key: string; perm?: string; group: string }[] = [
+const MANAGER_NAV: { href: string; key: string; perm?: string; group: string; schoolOnly?: boolean }[] = [
   { href: "/manager", key: "nav.dashboard", group: "nav.grpMonitoring" },
   { href: "/manager/full-view", key: "nav.fullView", perm: "view_tracking", group: "nav.grpMonitoring" },
   { href: "/manager/history", key: "nav.history", perm: "view_tracking", group: "nav.grpMonitoring" },
   { href: "/manager/drivers", key: "nav.drivers", perm: "manage_drivers", group: "nav.grpManagement" },
+  // School-only: bus drivers (data-only). University orgs never see this.
+  { href: "/manager/bus-drivers", key: "nav.busDrivers", perm: "manage_drivers", group: "nav.grpManagement", schoolOnly: true },
   { href: "/manager/vehicles", key: "nav.vehicles", perm: "manage_vehicles", group: "nav.grpManagement" },
   { href: "/manager/routes", key: "nav.routes", perm: "manage_routes", group: "nav.grpManagement" },
   { href: "/manager/assignments", key: "nav.assignments", perm: "manage_trips", group: "nav.grpManagement" },
   { href: "/manager/passengers", key: "nav.passengers", perm: "manage_passengers", group: "nav.grpManagement" },
   { href: "/manager/alerts", key: "nav.alerts", perm: "manage_trips", group: "nav.grpOperations" },
+  // School-only: student attendance reports (manager). University never sees this.
+  { href: "/manager/attendance", key: "nav.attendance", perm: "manage_passengers", group: "nav.grpOperations", schoolOnly: true },
   { href: "/manager/reports", key: "nav.reports", perm: "view_reports", group: "nav.grpOperations" },
   { href: "/manager/settings", key: "nav.settings", perm: "manage_settings", group: "nav.grpOperations" },
 ];
@@ -77,11 +82,17 @@ export default function ManagerLayout({ children }: { children: React.ReactNode 
 
   if (!profile) return null;
 
+  const module = profile.module ?? "university";
+  const isSchool = module === "school";
+
   const items: NavItem[] = MANAGER_NAV.filter(
-    (n) => !n.perm || canAccess(profile, n.perm),
+    (n) => (!n.perm || canAccess(profile, n.perm)) && (!n.schoolOnly || isSchool),
   ).map((n) => ({
     href: n.href,
-    label: t(n.key),
+    // School orgs reuse the SAME systems, just relabelled.
+    label: isSchool && n.key === "nav.drivers" ? t("nav.supervisors")
+      : isSchool && n.key === "nav.passengers" ? t("nav.students")
+      : t(n.key),
     badge: n.href === "/manager/alerts" ? unread : undefined,
     group: t(n.group),
   }));
@@ -134,7 +145,9 @@ export default function ManagerLayout({ children }: { children: React.ReactNode 
             {t("header.signOut")}
           </button>
         </header>
-        <main className="flex-1 p-6">{children}</main>
+        <main className="flex-1 p-6">
+          <ModuleProvider module={module}>{children}</ModuleProvider>
+        </main>
       </div>
     </div>
   );

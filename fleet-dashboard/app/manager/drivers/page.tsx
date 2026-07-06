@@ -10,6 +10,7 @@ import {
   type ManagerDriver,
 } from "@/lib/manager";
 import { useT } from "@/lib/i18n";
+import { useIsSchool } from "@/lib/module";
 import { useToast } from "@/lib/toast";
 import Button from "@/components/Button";
 import Input from "@/components/Input";
@@ -21,6 +22,9 @@ const EMPTY = { name: "", username: "", password: "", phone: "", email: "", lice
 
 export default function ManagerDriversPage() {
   const { t } = useT();
+  const isSchool = useIsSchool();
+  // School orgs relabel the "Driver" wording to "Supervisor"; University keeps "Driver".
+  const dt = (driverKey: string, supervisorKey: string) => t(isSchool ? supervisorKey : driverKey);
   const toast = useToast();
   const [drivers, setDrivers] = useState<ManagerDriver[]>([]);
   const [loading, setLoading] = useState(true);
@@ -124,7 +128,7 @@ export default function ManagerDriversPage() {
   }
 
   async function handleDelete(d: ManagerDriver) {
-    if (!window.confirm(t("drivers.deleteConfirm"))) return;
+    if (!window.confirm(dt("drivers.deleteConfirm", "drivers.deleteConfirmSupervisor"))) return;
     try {
       await deleteDriver(d.id);
       toast.success(t("toast.deleted"));
@@ -138,14 +142,14 @@ export default function ManagerDriversPage() {
     <div>
       <div className="mb-6 flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-semibold text-white">{t("nav.drivers")}</h1>
+          <h1 className="text-2xl font-semibold text-white">{isSchool ? t("nav.supervisors") : t("nav.drivers")}</h1>
           <p className="text-sm text-slate-400">{loading ? t("common.loading") : `${drivers.length}`}</p>
         </div>
         <button
           onClick={openModal}
           className="rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-brand-sage"
         >
-          + {t("drivers.newDriver")}
+          + {dt("drivers.newDriver", "drivers.newSupervisor")}
         </button>
       </div>
 
@@ -159,7 +163,7 @@ export default function ManagerDriversPage() {
         <table className="w-full text-left text-sm">
           <thead className="bg-ink-900/70 text-xs uppercase tracking-wide text-slate-400">
             <tr>
-              <th className="px-4 py-3">{t("common.driver")}</th>
+              <th className="px-4 py-3">{isSchool ? t("common.supervisor") : t("common.driver")}</th>
               <th className="px-4 py-3">{t("common.username")}</th>
               <th className="px-4 py-3">{t("common.status")}</th>
               <th className="px-4 py-3">{t("summary.online")}</th>
@@ -188,7 +192,7 @@ export default function ManagerDriversPage() {
                 <td className="px-4 py-3 text-slate-300">{d.current_vehicle ?? "—"}</td>
                 <td className="px-4 py-3">
                   <div className="flex items-center justify-end gap-1.5">
-                    <button onClick={() => openEdit(d)} title={t("drivers.editDriver")} aria-label={t("drivers.editDriver")} className="rounded-md border border-ink-700 p-1.5 text-slate-300 hover:border-brand hover:text-white"><EditIcon /></button>
+                    <button onClick={() => openEdit(d)} title={dt("drivers.editDriver", "drivers.editSupervisor")} aria-label={dt("drivers.editDriver", "drivers.editSupervisor")} className="rounded-md border border-ink-700 p-1.5 text-slate-300 hover:border-brand hover:text-white"><EditIcon /></button>
                     <button onClick={() => handleDelete(d)} title={t("common.delete")} aria-label={t("common.delete")} className="rounded-md border border-red-500/40 p-1.5 text-red-300 hover:bg-red-500/10"><TrashIcon /></button>
                   </div>
                 </td>
@@ -198,11 +202,11 @@ export default function ManagerDriversPage() {
         </table>
       </div>
 
-      <Modal open={open} onClose={() => setOpen(false)} title={t("drivers.newDriver")}>
+      <Modal open={open} onClose={() => setOpen(false)} title={dt("drivers.newDriver", "drivers.newSupervisor")}>
         {createdLogin ? (
           <div className="space-y-4">
             <div className="rounded-lg border border-brand/30 bg-brand/10 px-4 py-3 text-sm text-brand-sage">
-              {t("drivers.appLogin")}
+              {dt("drivers.appLogin", "drivers.appLoginSupervisor")}
               <div className="mt-2 select-all font-mono text-base text-white">{createdLogin}</div>
             </div>
             <div className="flex justify-end gap-2">
@@ -235,7 +239,7 @@ export default function ManagerDriversPage() {
         )}
       </Modal>
 
-      <Modal open={editDriver !== null} onClose={() => setEditDriver(null)} title={t("drivers.editDriver")}>
+      <Modal open={editDriver !== null} onClose={() => setEditDriver(null)} title={dt("drivers.editDriver", "drivers.editSupervisor")}>
         {editDriver && (
           <form onSubmit={handleEdit} className="space-y-3">
             <Input label={`${t("common.name")} *`} value={eForm.name} onChange={(e) => setEForm((f) => ({ ...f, name: e.target.value }))} required />

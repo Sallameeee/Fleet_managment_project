@@ -99,7 +99,7 @@ export default function RouteEditor({
             lng: s.lng,
             lat: s.lat,
             arrival: (s.arrival_time ?? "").slice(0, 5),
-            dwell: s.dwell_minutes ?? 0,
+            dwell: s.dwell_minutes ?? 4,
           }))
       : [],
   );
@@ -125,6 +125,7 @@ export default function RouteEditor({
 
   const mapRef = useRef<MapboxMap | null>(null);
   const [mapReady, setMapReady] = useState(false);
+  const [styleVersion, setStyleVersion] = useState(0); // bumped on base-map style change
   const markersRef = useRef<Map<string, mapboxgl.Marker>>(new Map());
   const shapeMarkersRef = useRef<Map<string, mapboxgl.Marker>>(new Map());
   const listRefs = useRef<Map<string, HTMLLIElement | null>>(new Map());
@@ -161,7 +162,7 @@ export default function RouteEditor({
       const id = newId();
       const fallback = `${t("routes.stop")} ${stopsRef.current.length + 1}`;
       setShapePoints([]);
-      setStops((s) => [...s, { id, name: presetName || fallback, lng, lat, arrival: "", dwell: 0 }]);
+      setStops((s) => [...s, { id, name: presetName || fallback, lng, lat, arrival: "", dwell: 4 }]);
       setSelectedId(id);
       if (!presetName) {
         const rn = await reverseGeocode(lng, lat);
@@ -239,7 +240,7 @@ export default function RouteEditor({
     clearShaping();
     setStops((s) => {
       const c = [...s];
-      c.splice(insertAfter + 1, 0, { id, name: "…", lng, lat, arrival: "", dwell: 0 });
+      c.splice(insertAfter + 1, 0, { id, name: "…", lng, lat, arrival: "", dwell: 4 });
       return c;
     });
     setSelectedId(id);
@@ -319,7 +320,11 @@ export default function RouteEditor({
   }
 
   function handleStyleChange(map: MapboxMap) {
+    // setStyle wipes style layers (the route line) but NOT DOM markers. Re-add the
+    // line, and bump styleVersion so the numbered stop markers rebuild too — so a
+    // base-map switch never makes the route or its stops disappear.
     if (dir) drawRoute(map, dir.geometry, colorRef.current);
+    setStyleVersion((n) => n + 1);
   }
 
   // Esc closes any open overlay.
@@ -384,7 +389,7 @@ export default function RouteEditor({
       markersRef.current.set(s.id, marker);
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [stopKey, selectedId, moveId, color, mapReady]);
+  }, [stopKey, selectedId, moveId, color, mapReady, styleVersion]);
 
   // reshape handle markers (draggable diamonds)
   useEffect(() => {
@@ -410,7 +415,7 @@ export default function RouteEditor({
       shapeMarkersRef.current.set(sp.id, marker);
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shapeKey, color, mapReady]);
+  }, [shapeKey, color, mapReady, styleVersion]);
 
   // directions (reroute on stop/shape change)
   useEffect(() => {
@@ -605,9 +610,10 @@ export default function RouteEditor({
       <div className="flex min-h-0 flex-1">
         {/* Map (kept LTR so it never mirrors under Arabic/RTL) */}
         <div dir="ltr" className="relative min-w-0 flex-1">
-          <MapView className="h-full w-full" onReady={handleMapReady} onStyleChange={handleStyleChange} />
+          <MapView className="h-full w-full" styleSwitcher onReady={handleMapReady} onStyleChange={handleStyleChange} />
 
-          <div className="pointer-events-none absolute left-3 top-3 z-10 max-w-sm rounded-lg bg-ink-900/80 px-3 py-1.5 text-xs text-slate-300 backdrop-blur">
+          {/* left-14 clears the style-switcher button that sits at top-left */}
+          <div className="pointer-events-none absolute left-14 top-3 z-10 max-w-sm rounded-lg bg-ink-900/80 px-3 py-1.5 text-xs text-slate-300 backdrop-blur">
             {topHint}
           </div>
 

@@ -18,6 +18,7 @@ router = APIRouter(prefix="/vehicles", tags=["vehicles"])
 class VehicleCreate(BaseModel):
     bus_number: str = Field(..., min_length=1)
     plate_number: Optional[str] = None
+    capacity: Optional[int] = Field(default=None, ge=0)
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
@@ -36,6 +37,7 @@ def create_vehicle(
                     "org_id": org_id,  # caller's org, NOT from the body
                     "bus_number": body.bus_number,
                     "plate_number": body.plate_number,
+                    "capacity": body.capacity,
                     "is_active": True,
                 }
             )
@@ -52,6 +54,7 @@ def create_vehicle(
         "id": v["id"],
         "bus_number": v["bus_number"],
         "plate_number": v["plate_number"],
+        "capacity": v.get("capacity"),
         "share_token": v["share_token"],  # permanent public tracking token
         "is_active": v["is_active"],
         "created_at": v["created_at"],
@@ -67,7 +70,7 @@ def list_vehicles(
 
     result = (
         supabase.table("vehicles")
-        .select("id, bus_number, plate_number, share_token, is_active, created_at")
+        .select("id, bus_number, plate_number, capacity, share_token, is_active, created_at")
         .eq("org_id", org_id)
         .order("created_at", desc=True)  # newest first
         .execute()
@@ -79,6 +82,7 @@ def list_vehicles(
 class VehicleUpdate(BaseModel):
     bus_number: Optional[str] = Field(None, min_length=1)
     plate_number: Optional[str] = None
+    capacity: Optional[int] = Field(default=None, ge=0)
     is_active: Optional[bool] = None
 
 
@@ -108,6 +112,8 @@ def update_vehicle(
         update["bus_number"] = body.bus_number
     if "plate_number" in body.model_fields_set:
         update["plate_number"] = body.plate_number
+    if "capacity" in body.model_fields_set:
+        update["capacity"] = body.capacity
     if body.is_active is not None:
         update["is_active"] = body.is_active
     if not update:
@@ -123,6 +129,7 @@ def update_vehicle(
         "id": row["id"],
         "bus_number": row["bus_number"],
         "plate_number": row["plate_number"],
+        "capacity": row.get("capacity"),
         "share_token": row["share_token"],
         "is_active": row["is_active"],
         "created_at": row["created_at"],

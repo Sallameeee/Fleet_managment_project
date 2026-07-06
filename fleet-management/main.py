@@ -6,7 +6,9 @@ from routers import (
     alert_rules,
     alerts,
     assignments,
+    attendance,
     auth,
+    bus_drivers,
     centers,
     dashboard,
     driver_groups,
@@ -45,6 +47,7 @@ app.add_middleware(
 app.include_router(auth.router)
 app.include_router(organizations.router)
 app.include_router(drivers.router)
+app.include_router(bus_drivers.router)
 app.include_router(driver_groups.router)
 app.include_router(centers.router)
 app.include_router(vehicles.router)
@@ -64,6 +67,7 @@ app.include_router(live.router)
 app.include_router(history.router)
 app.include_router(passengers.router)
 app.include_router(passenger.router)
+app.include_router(attendance.router)
 
 
 @app.get("/")

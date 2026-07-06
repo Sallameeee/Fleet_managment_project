@@ -27,6 +27,7 @@ const EMPTY_FORM = {
   email: "",
   phone: "",
   plan: "basic",
+  module: "university",
   max_devices: "10",
   monthly_fee: "0",
   subscription_expiry: "",
@@ -101,6 +102,7 @@ export default function OrganizationsPage() {
         username: form.username.trim(),
         password: form.password,
         plan: form.plan as CreateOrgInput["plan"],
+        module: form.module as CreateOrgInput["module"],
         max_devices: Number(form.max_devices) || 0,
         monthly_fee: Number(form.monthly_fee) || 0,
       };
@@ -193,6 +195,7 @@ export default function OrganizationsPage() {
               <th className="px-4 py-3">{t("common.name")}</th>
               <th className="px-4 py-3">{t("common.status")}</th>
               <th className="px-4 py-3">{t("orgs.plan")}</th>
+              <th className="px-4 py-3">{t("orgs.module")}</th>
               <th className="px-4 py-3">{t("orgs.monthlyFee")}</th>
               <th className="px-4 py-3">{t("orgs.expiry")}</th>
               <th className="px-4 py-3 text-right">{t("common.actions")}</th>
@@ -200,10 +203,10 @@ export default function OrganizationsPage() {
           </thead>
           <tbody className="divide-y divide-ink-800">
             {loading && (
-              <tr><td colSpan={6} className="px-4 py-8 text-center text-slate-500">{t("common.loading")}</td></tr>
+              <tr><td colSpan={7} className="px-4 py-8 text-center text-slate-500">{t("common.loading")}</td></tr>
             )}
             {!loading && orgs.length === 0 && !error && (
-              <tr><td colSpan={6} className="px-4 py-8 text-center text-slate-500">{t("common.none")}</td></tr>
+              <tr><td colSpan={7} className="px-4 py-8 text-center text-slate-500">{t("common.none")}</td></tr>
             )}
             {orgs.map((o) => (
               <tr
@@ -217,6 +220,7 @@ export default function OrganizationsPage() {
                 </td>
                 <td className="px-4 py-3"><StatusBadge status={o.status} /></td>
                 <td className="px-4 py-3 capitalize text-slate-300">{o.plan}</td>
+                <td className="px-4 py-3"><ModuleBadge module={o.module} /></td>
                 <td className="px-4 py-3 text-slate-300">{money(o.monthly_fee)}</td>
                 <td className="px-4 py-3 text-slate-300">{o.subscription_expiry ?? "—"}</td>
                 <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
@@ -331,6 +335,13 @@ export default function OrganizationsPage() {
               <Input label={t("common.phone")} value={form.phone} onChange={(e) => update("phone", e.target.value)} />
             </div>
             <Input label={t("common.address")} value={form.address} onChange={(e) => update("address", e.target.value)} />
+            <label className="block">
+              <span className="mb-1.5 block text-sm font-medium text-slate-300">{t("orgs.module")}</span>
+              <select value={form.module} onChange={(e) => update("module", e.target.value)} className="w-full rounded-lg border border-ink-700 bg-ink-850 px-3 py-2.5 text-slate-100 focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/40">
+                <option value="university">{t("orgs.moduleUniversity")}</option>
+                <option value="school">{t("orgs.moduleSchool")}</option>
+              </select>
+            </label>
             <div className="grid grid-cols-3 gap-3">
               <label className="block">
                 <span className="mb-1.5 block text-sm font-medium text-slate-300">{t("orgs.plan")}</span>
@@ -353,6 +364,18 @@ export default function OrganizationsPage() {
         )}
       </Modal>
     </div>
+  );
+}
+
+function ModuleBadge({ module }: { module?: string }) {
+  const { t } = useT();
+  const isSchool = module === "school";
+  const label = isSchool ? t("orgs.moduleSchool") : t("orgs.moduleUniversity");
+  const tone = isSchool
+    ? "border-brand/30 bg-brand/15 text-brand-sage"
+    : "border-ink-700 bg-ink-800 text-slate-300";
+  return (
+    <span className={"inline-flex rounded-full border px-2 py-0.5 text-xs font-medium " + tone}>{label}</span>
   );
 }
 

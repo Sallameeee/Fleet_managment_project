@@ -25,13 +25,13 @@ export default function ManagerVehiclesPage() {
   const [error, setError] = useState<string | null>(null);
 
   const [open, setOpen] = useState(false);
-  const [form, setForm] = useState({ bus_number: "", plate_number: "" });
+  const [form, setForm] = useState({ bus_number: "", plate_number: "", capacity: "" });
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
 
   const [editVehicle, setEditVehicle] = useState<ManagerVehicle | null>(null);
-  const [eForm, setEForm] = useState({ bus_number: "", plate_number: "", is_active: true });
+  const [eForm, setEForm] = useState({ bus_number: "", plate_number: "", capacity: "", is_active: true });
   const [saving, setSaving] = useState(false);
   const [eError, setEError] = useState<string | null>(null);
 
@@ -52,7 +52,7 @@ export default function ManagerVehiclesPage() {
   }, [load]);
 
   function openModal() {
-    setForm({ bus_number: "", plate_number: "" });
+    setForm({ bus_number: "", plate_number: "", capacity: "" });
     setCreateError(null);
     setOpen(true);
   }
@@ -65,6 +65,7 @@ export default function ManagerVehiclesPage() {
       await createVehicle({
         bus_number: form.bus_number.trim(),
         plate_number: form.plate_number.trim() || undefined,
+        capacity: form.capacity.trim() ? Number(form.capacity) : undefined,
       });
       setOpen(false);
       toast.success(t("toast.created"));
@@ -78,7 +79,7 @@ export default function ManagerVehiclesPage() {
 
   function openEdit(v: ManagerVehicle) {
     setEditVehicle(v);
-    setEForm({ bus_number: v.bus_number, plate_number: v.plate_number ?? "", is_active: v.is_active });
+    setEForm({ bus_number: v.bus_number, plate_number: v.plate_number ?? "", capacity: v.capacity != null ? String(v.capacity) : "", is_active: v.is_active });
     setEError(null);
   }
 
@@ -88,7 +89,7 @@ export default function ManagerVehiclesPage() {
     setSaving(true);
     setEError(null);
     try {
-      await updateVehicle(editVehicle.id, { bus_number: eForm.bus_number.trim(), plate_number: eForm.plate_number.trim() || null, is_active: eForm.is_active });
+      await updateVehicle(editVehicle.id, { bus_number: eForm.bus_number.trim(), plate_number: eForm.plate_number.trim() || null, capacity: eForm.capacity.trim() ? Number(eForm.capacity) : null, is_active: eForm.is_active });
       setEditVehicle(null);
       toast.success(t("toast.saved"));
       await load();
@@ -147,6 +148,7 @@ export default function ManagerVehiclesPage() {
             <tr>
               <th className="px-4 py-3">{t("vehicles.busNumber")}</th>
               <th className="px-4 py-3">{t("vehicles.plate")}</th>
+              <th className="px-4 py-3">{t("vehicles.capacity")}</th>
               <th className="px-4 py-3">{t("common.status")}</th>
               <th className="px-4 py-3">{t("vehicles.trackingLink")}</th>
               <th className="px-4 py-3 text-right">{t("common.actions")}</th>
@@ -154,7 +156,7 @@ export default function ManagerVehiclesPage() {
           </thead>
           <tbody className="divide-y divide-ink-800">
             {!loading && vehicles.length === 0 && !error && (
-              <tr><td colSpan={5} className="px-4 py-8 text-center text-slate-500">{t("common.none")}</td></tr>
+              <tr><td colSpan={6} className="px-4 py-8 text-center text-slate-500">{t("common.none")}</td></tr>
             )}
             {vehicles.map((v) => {
               const url = trackingUrl(v.share_token);
@@ -162,6 +164,7 @@ export default function ManagerVehiclesPage() {
                 <tr key={v.id} className="hover:bg-ink-900/40">
                   <td className="px-4 py-3 font-medium text-slate-200">{v.bus_number}</td>
                   <td className="px-4 py-3 text-slate-400">{v.plate_number ?? "—"}</td>
+                  <td className="px-4 py-3 text-slate-400">{v.capacity ?? "—"}</td>
                   <td className="px-4 py-3"><StatusBadge status={v.is_active ? "active" : "inactive"} /></td>
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-2">
@@ -199,6 +202,7 @@ export default function ManagerVehiclesPage() {
         <form onSubmit={handleCreate} className="space-y-3">
           <Input label={`${t("vehicles.busNumber")} *`} value={form.bus_number} onChange={(e) => setForm((f) => ({ ...f, bus_number: e.target.value }))} required />
           <Input label={t("vehicles.plateNumber")} value={form.plate_number} onChange={(e) => setForm((f) => ({ ...f, plate_number: e.target.value }))} />
+          <Input label={t("vehicles.capacity")} type="number" min={0} value={form.capacity} onChange={(e) => setForm((f) => ({ ...f, capacity: e.target.value }))} />
           {createError && <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-300">{createError}</div>}
           <div className="flex justify-end gap-2 pt-1">
             <button type="button" onClick={() => setOpen(false)} className="rounded-lg border border-ink-700 px-4 py-2 text-sm text-slate-300 hover:border-brand hover:text-white">{t("common.cancel")}</button>
@@ -212,6 +216,7 @@ export default function ManagerVehiclesPage() {
           <form onSubmit={handleEdit} className="space-y-3">
             <Input label={`${t("vehicles.busNumber")} *`} value={eForm.bus_number} onChange={(e) => setEForm((f) => ({ ...f, bus_number: e.target.value }))} required />
             <Input label={t("vehicles.plateNumber")} value={eForm.plate_number} onChange={(e) => setEForm((f) => ({ ...f, plate_number: e.target.value }))} />
+            <Input label={t("vehicles.capacity")} type="number" min={0} value={eForm.capacity} onChange={(e) => setEForm((f) => ({ ...f, capacity: e.target.value }))} />
             <label className="flex items-center gap-2 text-sm text-slate-300">
               <input type="checkbox" checked={eForm.is_active} onChange={(e) => setEForm((f) => ({ ...f, is_active: e.target.checked }))} className="h-4 w-4 accent-[#3AA76D]" />
               {t("common.active")}

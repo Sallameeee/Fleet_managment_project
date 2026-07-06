@@ -105,6 +105,27 @@ def _enrich(trip: dict, driver_name=None, route_name=None,
     }
 
 
+def _org_module(org_id: str) -> str:
+    """The org's feature module ('university' | 'school'); defaults to 'university'."""
+    try:
+        r = supabase.table("organizations").select("module").eq("id", org_id).limit(1).execute()
+        if r.data and r.data[0].get("module"):
+            return r.data[0]["module"]
+    except Exception:
+        pass
+    return "university"
+
+
+def _require_school_org(org_id: str) -> None:
+    """Students/attendance are SCHOOL-ONLY — University drivers get a clean 403 and
+    never see any student list."""
+    if _org_module(org_id) != "school":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Student attendance is only available for school organizations.",
+        )
+
+
 @router.get("/my-assignments")
 def my_assignments(current_user: dict = Depends(require_role("driver"))):
     """The signed-in DRIVER's own assignments for TODAY (org-scoped), enriched
@@ -169,7 +190,9 @@ def my_assignments(current_user: dict = Depends(require_role("driver"))):
     )
     active_trip = _enrich_one(active[0]) if active else None
 
-    return {"date": today, "assignments": assignments, "active_trip": active_trip}
+    # `module` lets the app show the school-only attendance feature (and never for
+    # University drivers).
+    return {"date": today, "module": _org_module(org_id), "assignments": assignments, "active_trip": active_trip}
 
 
 @router.post("/start", status_code=status.HTTP_201_CREATED)
@@ -527,6 +550,92 @@ def route_map(
         "geometry": r.get("geometry"),  # GeoJSON LineString, or null for older routes
         "stops": stops,
     }
+
+
+class AttendanceIn(BaseModel):
+    student_id: str = Field(..., min_length=1)
+    boarded: bool
+
+
+@router.get("/{trip_id}/students")
+def trip_students(trip_id: str, current_user: dict = Depends(require_role("driver"))):
+    """Students on the supervisor's active-trip route, with each student's boarded
+    status FOR THIS TRIP. SCHOOL orgs only — University drivers get a 403 and see
+    no student list. (A student = a passenger on the trip's route.)"""
+    trip = _load_own_active_trip(trip_id, current_user)  # own + active
+    org_id = trip["org_id"]
+    _require_school_org(org_id)
+
+    students = (
+        supabase.table("passengers")
+        .select("id, student_phone, parent_phone, grade, class_name")
+        .eq("org_id", org_id)
+        .eq("route_id", trip["route_id"])
+        .execute()
+        .data
+    )
+    ids = [s["id"] for s in students]
+    names, boarded = {}, {}
+    if ids:
+        names = {p["id"]: p["name"] for p in supabase.table("profiles").select("id, name").in_("id", ids).execute().data}
+        att = (
+            supabase.table("attendance")
+            .select("student_id, boarded")
+            .eq("trip_id", trip_id)
+            .in_("student_id", ids)
+            .execute()
+            .data
+        )
+        boarded = {a["student_id"]: a["boarded"] for a in att}
+
+    out = [
+        {
+            "student_id": s["id"],
+            "name": names.get(s["id"]),
+            "class_name": s.get("class_name"),
+            "grade": s.get("grade"),
+            "student_phone": s.get("student_phone"),
+            "parent_phone": s.get("parent_phone"),
+            "boarded": boarded.get(s["id"], False),
+        }
+        for s in students
+    ]
+    out.sort(key=lambda x: (x["name"] or "").lower())
+    return {"trip_id": trip_id, "count": len(out), "students": out}
+
+
+@router.post("/{trip_id}/attendance", status_code=status.HTTP_200_OK)
+def record_attendance(
+    trip_id: str,
+    body: AttendanceIn,
+    current_user: dict = Depends(require_role("driver")),
+):
+    """Record (upsert) one student's boarded status for this trip. Idempotent per
+    (trip, student). SCHOOL orgs only."""
+    trip = _load_own_active_trip(trip_id, current_user)
+    org_id = trip["org_id"]
+    _require_school_org(org_id)
+
+    st = (
+        supabase.table("passengers").select("id").eq("id", body.student_id).eq("org_id", org_id).limit(1).execute()
+    )
+    if not st.data:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="That student is not in your organization.")
+
+    trip_date = (trip.get("started_at") or "")[:10] or datetime.now(LOCAL_TZ).date().isoformat()
+    payload = {
+        "org_id": org_id,  # from the trip, never the body
+        "trip_id": trip_id,
+        "student_id": body.student_id,
+        "trip_date": trip_date,
+        "boarded": body.boarded,
+        "recorded_at": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        row = supabase.table("attendance").upsert(payload, on_conflict="trip_id,student_id").execute().data[0]
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Could not record attendance: {exc}")
+    return {"student_id": body.student_id, "boarded": row["boarded"], "trip_id": trip_id}
 
 
 @router.post("/{trip_id}/stop-visits", status_code=status.HTTP_200_OK)

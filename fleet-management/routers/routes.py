@@ -23,7 +23,10 @@ class RouteStopCreate(BaseModel):
     lat: float
     lng: float
     stop_order: int
-    dwell_minutes: int = 0
+    # Per-stop WAITING TIME (minutes) the driver holds for passengers. Defaults
+    # to 4 when not provided. Doubles as the "required dwell" for the short-stop
+    # alert (see routers/trips.py) and the upcoming driver-app arrival timer.
+    dwell_minutes: int = 4
     arrival_time: Optional[time] = None  # manager-entered arrival at this stop
 
 

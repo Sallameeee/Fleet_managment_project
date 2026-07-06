@@ -31,7 +31,7 @@ export default function OrganizationDetailPage() {
   const [error, setError] = useState<string | null>(null);
 
   const [editOpen, setEditOpen] = useState(false);
-  const [form, setForm] = useState({ plan: "basic", max_devices: "", monthly_fee: "", subscription_expiry: "" });
+  const [form, setForm] = useState({ plan: "basic", module: "university", max_devices: "", monthly_fee: "", subscription_expiry: "" });
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [busyStatus, setBusyStatus] = useState(false);
@@ -56,6 +56,7 @@ export default function OrganizationDetailPage() {
     if (!org) return;
     setForm({
       plan: org.plan as string,
+      module: (org.module as string) ?? "university",
       max_devices: String(org.max_devices ?? ""),
       monthly_fee: String(org.monthly_fee ?? ""),
       subscription_expiry: org.subscription_expiry ?? "",
@@ -71,6 +72,7 @@ export default function OrganizationDetailPage() {
     try {
       const patch: OrgPatch = {
         plan: form.plan as OrgPatch["plan"],
+        module: form.module as OrgPatch["module"],
         max_devices: Number(form.max_devices) || 0,
         monthly_fee: Number(form.monthly_fee) || 0,
         subscription_expiry: form.subscription_expiry || null,
@@ -162,6 +164,7 @@ export default function OrganizationDetailPage() {
       {/* Info grid */}
       <div className="grid grid-cols-2 gap-4 rounded-xl border border-ink-800 bg-ink-900/40 p-5 text-sm sm:grid-cols-4">
         <Info label={t("orgs.plan")} value={org.plan} />
+        <Info label={t("orgs.module")} value={org.module === "school" ? t("orgs.moduleSchool") : t("orgs.moduleUniversity")} />
         <Info label={t("orgs.monthlyFee")} value={money(org.monthly_fee)} />
         <Info label={t("common.maxDevices")} value={String(org.max_devices)} />
         <Info label={t("orgs.expiry")} value={org.subscription_expiry ?? "—"} />
@@ -244,6 +247,17 @@ export default function OrganizationDetailPage() {
       {/* Edit subscription modal */}
       <Modal open={editOpen} onClose={() => setEditOpen(false)} title={t("orgsd.editSubscription")}>
         <form onSubmit={handleSave} className="space-y-3">
+          <label className="block">
+            <span className="mb-1.5 block text-sm font-medium text-slate-300">{t("orgs.module")}</span>
+            <select
+              value={form.module}
+              onChange={(e) => setForm((f) => ({ ...f, module: e.target.value }))}
+              className="w-full rounded-lg border border-ink-700 bg-ink-850 px-3 py-2.5 text-slate-100 focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/40"
+            >
+              <option value="university">{t("orgs.moduleUniversity")}</option>
+              <option value="school">{t("orgs.moduleSchool")}</option>
+            </select>
+          </label>
           <label className="block">
             <span className="mb-1.5 block text-sm font-medium text-slate-300">{t("orgs.plan")}</span>
             <select

@@ -14,6 +14,7 @@ import {
   type BulkPassengerRow,
 } from "@/lib/manager";
 import { useT } from "@/lib/i18n";
+import { useIsSchool } from "@/lib/module";
 import { useToast } from "@/lib/toast";
 import Button from "@/components/Button";
 import Input from "@/components/Input";
@@ -50,8 +51,11 @@ function parseCsv(text: string): BulkPassengerRow[] {
   return rows;
 }
 
+const STUDENT_EMPTY = { name: "", email: "", university_id: "", route_id: "", parent_email: "", parent_phone: "", student_phone: "", grade: "", class_name: "" };
+
 export default function ManagerPassengersPage() {
   const { t } = useT();
+  const isSchool = useIsSchool();
   const toast = useToast();
   const [passengers, setPassengers] = useState<ManagerPassenger[]>([]);
   const [routes, setRoutes] = useState<ManagerRoute[]>([]);
@@ -60,13 +64,13 @@ export default function ManagerPassengersPage() {
   const fileRef = useRef<HTMLInputElement>(null);
 
   const [open, setOpen] = useState(false);
-  const [form, setForm] = useState({ name: "", email: "", university_id: "", route_id: "" });
+  const [form, setForm] = useState({ ...STUDENT_EMPTY });
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   const [created, setCreated] = useState<PassengerCreateResult | null>(null);
 
   const [editP, setEditP] = useState<ManagerPassenger | null>(null);
-  const [eForm, setEForm] = useState({ name: "", university_id: "", route_id: "", is_active: true });
+  const [eForm, setEForm] = useState({ name: "", university_id: "", route_id: "", is_active: true, parent_email: "", parent_phone: "", student_phone: "", grade: "", class_name: "" });
   const [saving, setSaving] = useState(false);
   const [eError, setEError] = useState<string | null>(null);
 
@@ -91,7 +95,7 @@ export default function ManagerPassengersPage() {
   const routeName = (id: string | null) => routes.find((r) => r.id === id)?.name ?? "—";
 
   function openCreate() {
-    setForm({ name: "", email: "", university_id: "", route_id: "" });
+    setForm({ ...STUDENT_EMPTY });
     setCreateError(null);
     setCreated(null);
     setOpen(true);
@@ -102,7 +106,20 @@ export default function ManagerPassengersPage() {
     setCreating(true);
     setCreateError(null);
     try {
-      const res = await createPassenger({ name: form.name.trim(), email: form.email.trim(), university_id: form.university_id.trim() || undefined, route_id: form.route_id });
+      // School: the parent's email IS the login (the parent tracks the bus).
+      const payload = isSchool
+        ? {
+            name: form.name.trim(),
+            email: form.parent_email.trim(),
+            route_id: form.route_id,
+            parent_email: form.parent_email.trim(),
+            parent_phone: form.parent_phone.trim() || undefined,
+            student_phone: form.student_phone.trim() || undefined,
+            grade: form.grade.trim() || undefined,
+            class_name: form.class_name.trim() || undefined,
+          }
+        : { name: form.name.trim(), email: form.email.trim(), university_id: form.university_id.trim() || undefined, route_id: form.route_id };
+      const res = await createPassenger(payload);
       setCreated(res);
       toast.success(t("toast.created"));
       await load();
@@ -115,7 +132,17 @@ export default function ManagerPassengersPage() {
 
   function openEdit(p: ManagerPassenger) {
     setEditP(p);
-    setEForm({ name: p.name ?? "", university_id: p.university_id ?? "", route_id: p.route_id ?? "", is_active: p.is_active });
+    setEForm({
+      name: p.name ?? "",
+      university_id: p.university_id ?? "",
+      route_id: p.route_id ?? "",
+      is_active: p.is_active,
+      parent_email: p.parent_email ?? "",
+      parent_phone: p.parent_phone ?? "",
+      student_phone: p.student_phone ?? "",
+      grade: p.grade ?? "",
+      class_name: p.class_name ?? "",
+    });
     setEError(null);
   }
 
@@ -125,7 +152,19 @@ export default function ManagerPassengersPage() {
     setSaving(true);
     setEError(null);
     try {
-      await updatePassenger(editP.id, { name: eForm.name.trim(), university_id: eForm.university_id.trim() || null, route_id: eForm.route_id, is_active: eForm.is_active });
+      const patch = isSchool
+        ? {
+            name: eForm.name.trim(),
+            route_id: eForm.route_id,
+            is_active: eForm.is_active,
+            parent_email: eForm.parent_email.trim() || null,
+            parent_phone: eForm.parent_phone.trim() || null,
+            student_phone: eForm.student_phone.trim() || null,
+            grade: eForm.grade.trim() || null,
+            class_name: eForm.class_name.trim() || null,
+          }
+        : { name: eForm.name.trim(), university_id: eForm.university_id.trim() || null, route_id: eForm.route_id, is_active: eForm.is_active };
+      await updatePassenger(editP.id, patch);
       setEditP(null);
       toast.success(t("toast.saved"));
       await load();
@@ -183,14 +222,14 @@ export default function ManagerPassengersPage() {
     <div>
       <div className="mb-6 flex flex-wrap items-center justify-between gap-2">
         <div>
-          <h1 className="text-2xl font-semibold text-white">{t("nav.passengers")}</h1>
-          <p className="text-sm text-slate-400">{loading ? t("common.loading") : `${passengers.length} · ${t("pax.subtitle")}`}</p>
+          <h1 className="text-2xl font-semibold text-white">{isSchool ? t("nav.students") : t("nav.passengers")}</h1>
+          <p className="text-sm text-slate-400">{loading ? t("common.loading") : `${passengers.length} · ${isSchool ? t("students.subtitle") : t("pax.subtitle")}`}</p>
         </div>
         <div className="flex items-center gap-2">
           <button onClick={downloadTemplate} className="rounded-lg border border-ink-700 px-3 py-2 text-sm text-slate-300 hover:border-brand hover:text-white">{t("pax.downloadTemplate")}</button>
           <button onClick={() => fileRef.current?.click()} className="rounded-lg border border-ink-700 px-3 py-2 text-sm text-slate-300 hover:border-brand hover:text-white">{t("pax.upload")}</button>
           <input ref={fileRef} type="file" accept=".csv,text/csv" onChange={handleUpload} className="hidden" />
-          <button onClick={openCreate} className="rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-brand-sage">+ {t("pax.newPassenger")}</button>
+          <button onClick={openCreate} className="rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-brand-sage">+ {isSchool ? t("students.new") : t("pax.newPassenger")}</button>
         </div>
       </div>
 
@@ -201,8 +240,8 @@ export default function ManagerPassengersPage() {
           <thead className="bg-ink-900/70 text-xs uppercase tracking-wide text-slate-400">
             <tr>
               <th className="px-4 py-3">{t("pax.studentName")}</th>
-              <th className="px-4 py-3">{t("pax.universityId")}</th>
-              <th className="px-4 py-3">{t("common.email")}</th>
+              <th className="px-4 py-3">{isSchool ? t("students.class") : t("pax.universityId")}</th>
+              <th className="px-4 py-3">{isSchool ? t("students.parentPhone") : t("common.email")}</th>
               <th className="px-4 py-3">{t("pax.route")}</th>
               <th className="px-4 py-3">{t("common.status")}</th>
               <th className="px-4 py-3 text-right">{t("common.actions")}</th>
@@ -215,8 +254,8 @@ export default function ManagerPassengersPage() {
             {passengers.map((p) => (
               <tr key={p.id} className="hover:bg-ink-900/40">
                 <td className="px-4 py-3 font-medium text-white">{p.name}</td>
-                <td className="px-4 py-3 text-slate-400">{p.university_id ?? "—"}</td>
-                <td className="px-4 py-3 text-slate-400">{p.email}</td>
+                <td className="px-4 py-3 text-slate-400">{isSchool ? (p.class_name ?? "—") : (p.university_id ?? "—")}</td>
+                <td className="px-4 py-3 text-slate-400">{isSchool ? (p.parent_phone ?? "—") : p.email}</td>
                 <td className="px-4 py-3 text-slate-300">{p.route_name ?? "—"}</td>
                 <td className="px-4 py-3"><StatusBadge status={p.is_active ? "active" : "inactive"} /></td>
                 <td className="px-4 py-3">
@@ -232,7 +271,7 @@ export default function ManagerPassengersPage() {
       </div>
 
       {/* Create */}
-      <Modal open={open} onClose={() => setOpen(false)} title={t("pax.newPassenger")}>
+      <Modal open={open} onClose={() => setOpen(false)} title={isSchool ? t("students.new") : t("pax.newPassenger")}>
         {created ? (
           <div className="space-y-4">
             <div className="rounded-lg border border-brand/30 bg-brand/10 px-4 py-3 text-sm text-brand-sage">
@@ -250,10 +289,24 @@ export default function ManagerPassengersPage() {
         ) : (
           <form onSubmit={handleCreate} className="space-y-3">
             <Input label={`${t("pax.studentName")} *`} value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} required />
-            <div className="grid grid-cols-2 gap-3">
-              <Input label={t("pax.universityId")} value={form.university_id} onChange={(e) => setForm((f) => ({ ...f, university_id: e.target.value }))} />
-              <Input label={`${t("common.email")} *`} type="email" value={form.email} onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))} required />
-            </div>
+            {isSchool ? (
+              <>
+                <div className="grid grid-cols-2 gap-3">
+                  <Input label={`${t("students.parentEmail")} *`} type="email" value={form.parent_email} onChange={(e) => setForm((f) => ({ ...f, parent_email: e.target.value }))} required />
+                  <Input label={`${t("students.parentPhone")} *`} value={form.parent_phone} onChange={(e) => setForm((f) => ({ ...f, parent_phone: e.target.value }))} required />
+                </div>
+                <div className="grid grid-cols-3 gap-3">
+                  <Input label={t("students.studentPhone")} value={form.student_phone} onChange={(e) => setForm((f) => ({ ...f, student_phone: e.target.value }))} />
+                  <Input label={t("students.grade")} value={form.grade} onChange={(e) => setForm((f) => ({ ...f, grade: e.target.value }))} />
+                  <Input label={t("students.class")} value={form.class_name} onChange={(e) => setForm((f) => ({ ...f, class_name: e.target.value }))} />
+                </div>
+              </>
+            ) : (
+              <div className="grid grid-cols-2 gap-3">
+                <Input label={t("pax.universityId")} value={form.university_id} onChange={(e) => setForm((f) => ({ ...f, university_id: e.target.value }))} />
+                <Input label={`${t("common.email")} *`} type="email" value={form.email} onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))} required />
+              </div>
+            )}
             <label className="block">
               <span className="mb-1.5 block text-sm font-medium text-slate-300">{t("pax.route")} *</span>
               <RouteAutocomplete routes={routes} value={form.route_id} onChange={(id) => setForm((f) => ({ ...f, route_id: id }))} />
@@ -268,11 +321,25 @@ export default function ManagerPassengersPage() {
       </Modal>
 
       {/* Edit */}
-      <Modal open={editP !== null} onClose={() => setEditP(null)} title={t("pax.editPassenger")}>
+      <Modal open={editP !== null} onClose={() => setEditP(null)} title={isSchool ? t("students.edit") : t("pax.editPassenger")}>
         {editP && (
           <form onSubmit={handleEdit} className="space-y-3">
             <Input label={`${t("pax.studentName")} *`} value={eForm.name} onChange={(e) => setEForm((f) => ({ ...f, name: e.target.value }))} required />
-            <Input label={t("pax.universityId")} value={eForm.university_id} onChange={(e) => setEForm((f) => ({ ...f, university_id: e.target.value }))} />
+            {isSchool ? (
+              <>
+                <div className="grid grid-cols-2 gap-3">
+                  <Input label={t("students.parentEmail")} type="email" value={eForm.parent_email} onChange={(e) => setEForm((f) => ({ ...f, parent_email: e.target.value }))} />
+                  <Input label={t("students.parentPhone")} value={eForm.parent_phone} onChange={(e) => setEForm((f) => ({ ...f, parent_phone: e.target.value }))} />
+                </div>
+                <div className="grid grid-cols-3 gap-3">
+                  <Input label={t("students.studentPhone")} value={eForm.student_phone} onChange={(e) => setEForm((f) => ({ ...f, student_phone: e.target.value }))} />
+                  <Input label={t("students.grade")} value={eForm.grade} onChange={(e) => setEForm((f) => ({ ...f, grade: e.target.value }))} />
+                  <Input label={t("students.class")} value={eForm.class_name} onChange={(e) => setEForm((f) => ({ ...f, class_name: e.target.value }))} />
+                </div>
+              </>
+            ) : (
+              <Input label={t("pax.universityId")} value={eForm.university_id} onChange={(e) => setEForm((f) => ({ ...f, university_id: e.target.value }))} />
+            )}
             <label className="block">
               <span className="mb-1.5 block text-sm font-medium text-slate-300">{t("pax.route")}</span>
               <RouteAutocomplete routes={routes} value={eForm.route_id} onChange={(id) => setEForm((f) => ({ ...f, route_id: id }))} />

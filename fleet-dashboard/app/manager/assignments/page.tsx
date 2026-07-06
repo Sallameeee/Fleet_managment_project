@@ -9,20 +9,23 @@ import {
   listDrivers,
   listRoutes,
   listVehicles,
+  listBusDrivers,
   AssignmentConflictError,
   type ManagerAssignment,
   type ManagerDriver,
   type ManagerRoute,
   type ManagerVehicle,
+  type BusDriver,
   type AssignmentConflict,
 } from "@/lib/manager";
 import { useT } from "@/lib/i18n";
+import { useIsSchool } from "@/lib/module";
 import { useToast } from "@/lib/toast";
 import Button from "@/components/Button";
 import Input from "@/components/Input";
 import Modal from "@/components/Modal";
 
-const emptyForm = { driver_id: "", route_id: "", vehicle_id: "", trip_date: "", shift_label: "", start_time: "", end_time: "" };
+const emptyForm = { driver_id: "", route_id: "", vehicle_id: "", trip_date: "", shift_label: "", start_time: "", end_time: "", bus_driver_id: "" };
 
 // Fill "{name}"-style placeholders in a translated template.
 function fill(template: string, vars: Record<string, string>): string {
@@ -31,6 +34,7 @@ function fill(template: string, vars: Record<string, string>): string {
 
 export default function ManagerAssignmentsPage() {
   const { t } = useT();
+  const isSchool = useIsSchool();
   const toast = useToast();
   const [assignments, setAssignments] = useState<ManagerAssignment[]>([]);
   const [dateFilter, setDateFilter] = useState("");
@@ -40,6 +44,7 @@ export default function ManagerAssignmentsPage() {
   const [drivers, setDrivers] = useState<ManagerDriver[]>([]);
   const [routes, setRoutes] = useState<ManagerRoute[]>([]);
   const [vehicles, setVehicles] = useState<ManagerVehicle[]>([]);
+  const [busDrivers, setBusDrivers] = useState<BusDriver[]>([]);
 
   const [open, setOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -70,6 +75,7 @@ export default function ManagerAssignmentsPage() {
       setDrivers(d);
       setRoutes(r);
       setVehicles(v);
+      if (isSchool) setBusDrivers(await listBusDrivers()); // school-only bus driver options
     } catch {
       /* the selects just stay empty */
     }
@@ -93,6 +99,7 @@ export default function ManagerAssignmentsPage() {
       shift_label: a.shift_label ?? "",
       start_time: (a.start_time ?? "").slice(0, 5),
       end_time: (a.end_time ?? "").slice(0, 5),
+      bus_driver_id: a.bus_driver_id ?? "",
     });
     setFormError(null);
     setOpen(true);
@@ -127,6 +134,8 @@ export default function ManagerAssignmentsPage() {
         shift_label: form.shift_label.trim() || undefined,
         start_time: form.start_time || undefined,
         end_time: form.end_time || undefined,
+        // School module: the linked bus driver (only sent for school orgs).
+        bus_driver_id: isSchool ? form.bus_driver_id || undefined : undefined,
       };
       if (editingId) await updateAssignment(editingId, payload);
       else await createAssignment(payload);
@@ -187,9 +196,10 @@ export default function ManagerAssignmentsPage() {
           <thead className="bg-ink-900/70 text-xs uppercase tracking-wide text-slate-400">
             <tr>
               <th className="px-4 py-3">{t("common.date")}</th>
-              <th className="px-4 py-3">{t("common.driver")}</th>
+              <th className="px-4 py-3">{isSchool ? t("common.supervisor") : t("common.driver")}</th>
               <th className="px-4 py-3">{t("common.route")}</th>
               <th className="px-4 py-3">{t("common.vehicle")}</th>
+              {isSchool && <th className="px-4 py-3">{t("common.busDriver")}</th>}
               <th className="px-4 py-3">{t("assign.shift")}</th>
               <th className="px-4 py-3">{t("assign.start")}</th>
               <th className="px-4 py-3">{t("assign.end")}</th>
@@ -198,7 +208,7 @@ export default function ManagerAssignmentsPage() {
           </thead>
           <tbody className="divide-y divide-ink-800">
             {!loading && assignments.length === 0 && !error && (
-              <tr><td colSpan={8} className="px-4 py-8 text-center text-slate-500">{t("assign.none")}</td></tr>
+              <tr><td colSpan={isSchool ? 9 : 8} className="px-4 py-8 text-center text-slate-500">{t("assign.none")}</td></tr>
             )}
             {assignments.map((a) => (
               <tr key={a.id} className="hover:bg-ink-900/40">
@@ -206,6 +216,7 @@ export default function ManagerAssignmentsPage() {
                 <td className="px-4 py-3 text-white">{a.driver_name ?? "—"}</td>
                 <td className="px-4 py-3 text-slate-300">{a.route_name ?? "—"}</td>
                 <td className="px-4 py-3 text-slate-300">{a.vehicle_bus_number ?? "—"}</td>
+                {isSchool && <td className="px-4 py-3 text-slate-300">{a.bus_driver_name ?? "—"}</td>}
                 <td className="px-4 py-3 text-slate-400">{a.shift_label ?? "—"}</td>
                 <td className="px-4 py-3 text-slate-400">{a.start_time ? a.start_time.slice(0, 5) : "—"}</td>
                 <td className="px-4 py-3 text-slate-400">{a.end_time ? a.end_time.slice(0, 5) : "—"}</td>
@@ -237,7 +248,7 @@ export default function ManagerAssignmentsPage() {
 
       <Modal open={open} onClose={() => setOpen(false)} title={editingId ? t("assign.editAssignment") : t("assign.newAssignment")}>
         <form onSubmit={handleSubmit} className="space-y-3">
-          <Select label={`${t("common.driver")} *`} value={form.driver_id} onChange={(v) => setForm((f) => ({ ...f, driver_id: v }))} options={drivers.map((d) => ({ value: d.id, label: `${d.name} (${d.username})` }))} placeholder={t("assign.select")} />
+          <Select label={`${isSchool ? t("common.supervisor") : t("common.driver")} *`} value={form.driver_id} onChange={(v) => setForm((f) => ({ ...f, driver_id: v }))} options={drivers.map((d) => ({ value: d.id, label: `${d.name} (${d.username})` }))} placeholder={t("assign.select")} />
           <Select label={`${t("common.route")} *`} value={form.route_id} onChange={(v) => setForm((f) => ({ ...f, route_id: v }))} options={routes.map((r) => ({ value: r.id, label: r.name }))} placeholder={t("assign.select")} />
           <Select label={`${t("common.vehicle")} *`} value={form.vehicle_id} onChange={(v) => setForm((f) => ({ ...f, vehicle_id: v }))} options={vehicles.map((v) => ({ value: v.id, label: v.bus_number }))} placeholder={t("assign.select")} />
           <Input label={`${t("assign.tripDate")} *`} type="date" value={form.trip_date} onChange={(e) => setForm((f) => ({ ...f, trip_date: e.target.value }))} required />
@@ -246,6 +257,15 @@ export default function ManagerAssignmentsPage() {
             <Input label={`${t("assign.endTime")} *`} type="time" value={form.end_time} onChange={(e) => setForm((f) => ({ ...f, end_time: e.target.value }))} required />
           </div>
           <Input label={t("assign.shiftLabel")} value={form.shift_label} onChange={(e) => setForm((f) => ({ ...f, shift_label: e.target.value }))} />
+          {isSchool && (
+            <Select
+              label={t("assign.busDriver")}
+              value={form.bus_driver_id}
+              onChange={(v) => setForm((f) => ({ ...f, bus_driver_id: v }))}
+              options={busDrivers.map((b) => ({ value: b.id, label: b.phone ? `${b.name} · ${b.phone}` : b.name }))}
+              placeholder={t("assign.select")}
+            />
+          )}
           {formError && <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-300">{formError}</div>}
           <div className="flex justify-end gap-2 pt-1">
             <button type="button" onClick={() => setOpen(false)} className="rounded-lg border border-ink-700 px-4 py-2 text-sm text-slate-300 hover:border-brand hover:text-white">{t("common.cancel")}</button>

@@ -161,6 +161,19 @@ def me(current_user: dict = Depends(get_current_user)):
 
     Lets the frontend rehydrate session/UI without re-logging in.
     """
+    # Surface the org's feature module so the dashboard can relabel/gate features
+    # (e.g. "Drivers" → "Supervisors" in school orgs). Best-effort; defaults to
+    # 'university' so behaviour is unchanged if the lookup fails or is unset.
+    org_module = "university"
+    try:
+        _oid = current_user.get("org_id")
+        if _oid:
+            _o = supabase.table("organizations").select("module").eq("id", _oid).limit(1).execute()
+            if _o.data and _o.data[0].get("module"):
+                org_module = _o.data[0]["module"]
+    except Exception:
+        pass
+
     return {
         "id": current_user.get("id"),
         "name": current_user.get("name"),
@@ -169,6 +182,7 @@ def me(current_user: dict = Depends(get_current_user)):
         "phone": current_user.get("phone"),
         "role": current_user.get("role"),
         "org_id": current_user.get("org_id"),
+        "module": org_module,
         "permissions": current_user.get("permissions"),
         "is_active": current_user.get("is_active"),
         "created_at": current_user.get("created_at"),

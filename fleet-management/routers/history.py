@@ -77,20 +77,67 @@ def get_history(
         for r in supabase.table("routes").select("id, name, geometry, color").in_("id", route_ids).execute().data:
             routes[r["id"]] = r
 
-    # --- 2. ONE pings query for exactly these trips (bounded by selected trips) ---
+    # --- 2. pings for exactly these trips (bounded by selected trips) ---
+    # PostgREST caps a single response at ~1000 rows. A busy trip (5s pings ≈
+    # 720/hour) or several trips together easily exceed that, which previously
+    # truncated the drawn polyline mid-route. We PAGE through with .range() until
+    # a short page signals the end, so EVERY ping is returned and drawn.
     pings_by_trip = defaultdict(list)
-    pings = (
-        supabase.table("location_pings")
-        .select("trip_id, lat, lng, recorded_at")
-        .in_("trip_id", trip_ids)
-        .order("trip_id", desc=False)
-        .order("recorded_at", desc=False)
-        .execute()
-    ).data
-    for p in pings:
-        pings_by_trip[p["trip_id"]].append(
-            {"lat": p["lat"], "lng": p["lng"], "recorded_at": p["recorded_at"]}
-        )
+    PAGE = 1000
+    offset = 0
+    while True:
+        chunk = (
+            supabase.table("location_pings")
+            .select("trip_id, lat, lng, recorded_at")
+            .in_("trip_id", trip_ids)
+            .order("trip_id", desc=False)
+            .order("recorded_at", desc=False)
+            .range(offset, offset + PAGE - 1)
+            .execute()
+        ).data
+        for p in chunk:
+            pings_by_trip[p["trip_id"]].append(
+                {"lat": p["lat"], "lng": p["lng"], "recorded_at": p["recorded_at"]}
+            )
+        if len(chunk) < PAGE:
+            break
+        offset += PAGE
+
+    # --- 2b. stop-visits for these trips (arrival + waiting time per stop) ---
+    # Embedded here (not a separate /trips/{id}/stop-visits call) so it shares the
+    # History view_tracking permission and one round-trip. Tolerant of the table
+    # not existing yet (older DBs) and of trips with no visits (older trips).
+    visits_by_trip = defaultdict(list)
+    try:
+        sv_rows = (
+            supabase.table("stop_visits")
+            .select("trip_id, stop_id, stop_order, arrival_time, departure_time, planned_dwell_seconds, actual_dwell_seconds")
+            .in_("trip_id", trip_ids)
+            .order("trip_id", desc=False)
+            .order("stop_order", desc=False)
+            .execute()
+        ).data
+        sv_stop_ids = list({v["stop_id"] for v in sv_rows if v.get("stop_id")})
+        sv_names = {}
+        if sv_stop_ids:
+            sv_names = {
+                r["id"]: r["name"]
+                for r in supabase.table("route_stops").select("id, name").in_("id", sv_stop_ids).execute().data
+            }
+        for v in sv_rows:
+            visits_by_trip[v["trip_id"]].append(
+                {
+                    "stop_id": v.get("stop_id"),
+                    "stop_name": sv_names.get(v.get("stop_id")),
+                    "stop_order": v.get("stop_order"),
+                    "arrival_time": v.get("arrival_time"),
+                    "departure_time": v.get("departure_time"),
+                    "planned_dwell_seconds": v.get("planned_dwell_seconds"),
+                    "actual_dwell_seconds": v.get("actual_dwell_seconds"),
+                }
+            )
+    except Exception:
+        pass  # no stop_visits table / query failed → history still returns trips+pings
 
     out = []
     for t in trips:
@@ -110,6 +157,7 @@ def get_history(
                 "started_at": t.get("started_at"),
                 "ended_at": t.get("ended_at"),
                 "pings": pings_by_trip.get(t["id"], []),
+                "stop_visits": visits_by_trip.get(t["id"], []),
             }
         )
     # Group-friendly order: by driver name, then time.

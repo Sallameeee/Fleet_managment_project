@@ -148,6 +148,7 @@ export interface Organization {
   slug: string;
   status: string;
   plan: string;
+  module?: string; // 'university' (default) | 'school'
   max_devices: number;
   monthly_fee: number;
   subscription_expiry: string | null;
@@ -170,6 +171,7 @@ export interface CreateOrgInput {
   email?: string;
   phone?: string;
   plan: "basic" | "pro" | "enterprise";
+  module: "university" | "school";
   max_devices: number;
   monthly_fee: number;
   subscription_expiry?: string | null;
@@ -228,6 +230,7 @@ export async function getOrganization(id: string): Promise<OrganizationDetail> {
 
 export interface OrgPatch {
   plan?: "basic" | "pro" | "enterprise";
+  module?: "university" | "school";
   max_devices?: number;
   monthly_fee?: number;
   subscription_expiry?: string | null;

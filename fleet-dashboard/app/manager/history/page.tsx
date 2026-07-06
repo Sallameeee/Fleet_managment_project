@@ -30,6 +30,19 @@ function fmtClock(ms: number): string {
 function pingMs(iso: string): number {
   return new Date(iso.replace(" ", "T")).getTime();
 }
+function fmtClockIso(iso: string | null): string {
+  if (!iso) return "—";
+  const d = new Date(iso.replace(" ", "T"));
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+// Waiting duration, e.g. "4m 12s" (or "48s" under a minute).
+function fmtDwell(sec: number | null): string {
+  if (sec === null || sec === undefined || sec < 0) return "—";
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return m === 0 ? `${s}s` : `${m}m ${s}s`;
+}
 
 export default function ManagerHistoryPage() {
   const { t } = useT();
@@ -297,6 +310,48 @@ export default function ManagerHistoryPage() {
               ) : (
                 <p className="text-center text-xs text-slate-500">{t("hist.noPath")}</p>
               )}
+            </div>
+          )}
+
+          {/* Per-stop waiting times (from stop_visits) */}
+          {selected && selected.stop_visits.length > 0 && (
+            <div className="rounded-xl border border-ink-800 bg-ink-900/50 p-3">
+              <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">{t("hist.stopsTitle")}</h3>
+              <ol className="space-y-2">
+                {selected.stop_visits.map((v, i) => {
+                  const planned = v.planned_dwell_seconds;
+                  return (
+                    <li key={v.stop_id ?? i} className="flex items-start gap-3">
+                      <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-bold text-white" style={{ background: selected.route_color || ACTUAL }}>
+                        {v.stop_order ?? i + 1}
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="truncate text-sm font-medium text-white">{v.stop_name ?? "—"}</span>
+                          <span className="shrink-0 text-xs text-slate-400">{t("hist.arrived")} {fmtClockIso(v.arrival_time)}</span>
+                        </div>
+                        <div className="mt-0.5 text-xs text-slate-400">
+                          {v.departure_time ? (
+                            <>
+                              {t("hist.waited")} <span className="font-semibold text-brand-sage">{fmtDwell(v.actual_dwell_seconds)}</span>
+                              {planned != null && planned > 0 && (
+                                <span className="text-slate-500"> · {fmtDwell(planned)} {t("hist.planned")}</span>
+                              )}
+                            </>
+                          ) : (
+                            <span className="text-amber-300/80">{t("hist.stillThere")}</span>
+                          )}
+                        </div>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ol>
+            </div>
+          )}
+          {selected && selected.stop_visits.length === 0 && (
+            <div className="rounded-xl border border-ink-800 bg-ink-900/50 p-3 text-center text-xs text-slate-500">
+              {t("hist.noStopVisits")}
             </div>
           )}
         </div>

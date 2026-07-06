@@ -77,6 +77,7 @@ export interface ManagerProfile {
   username?: string;
   role: string;
   org_id: string;
+  module?: string; // 'university' (default) | 'school' — drives feature relabels
   permissions: Permissions | null;
 }
 
@@ -223,6 +224,7 @@ export interface ManagerVehicle {
   id: string;
   bus_number: string;
   plate_number: string | null;
+  capacity?: number | null;
   share_token: string;
   is_active: boolean;
   created_at?: string;
@@ -237,6 +239,7 @@ export async function listVehicles(): Promise<ManagerVehicle[]> {
 export interface CreateVehicleInput {
   bus_number: string;
   plate_number?: string;
+  capacity?: number | null;
 }
 
 export async function createVehicle(input: CreateVehicleInput): Promise<ManagerVehicle> {
@@ -248,6 +251,7 @@ export async function createVehicle(input: CreateVehicleInput): Promise<ManagerV
 export interface UpdateVehicleInput {
   bus_number?: string;
   plate_number?: string | null;
+  capacity?: number | null;
   is_active?: boolean;
 }
 
@@ -260,6 +264,49 @@ export async function updateVehicle(id: string, input: UpdateVehicleInput): Prom
 export async function deleteVehicle(id: string): Promise<void> {
   const res = await managerFetch(`/vehicles/${id}`, { method: "DELETE" });
   if (!res.ok) throw new Error(await extractError(res, "Failed to delete vehicle."));
+}
+
+// --- Bus drivers (School module — data-only entities, no login) --------------
+
+export interface BusDriver {
+  id: string;
+  name: string;
+  phone: string | null;
+  license_number: string | null;
+  license_start_date: string | null;
+  license_end_date: string | null;
+  created_at?: string;
+}
+
+export interface BusDriverInput {
+  name: string;
+  phone?: string | null;
+  license_number?: string | null;
+  license_start_date?: string | null;
+  license_end_date?: string | null;
+}
+
+export async function listBusDrivers(): Promise<BusDriver[]> {
+  const res = await managerFetch("/bus-drivers");
+  if (!res.ok) throw new Error(await extractError(res, "Failed to load bus drivers."));
+  return (await res.json()).bus_drivers as BusDriver[];
+}
+
+export async function createBusDriver(input: BusDriverInput): Promise<BusDriver> {
+  const res = await managerFetch("/bus-drivers", { method: "POST", body: JSON.stringify(input) });
+  if (!res.ok) throw new Error(await extractError(res, "Failed to create bus driver."));
+  return (await res.json()) as BusDriver;
+}
+
+export async function updateBusDriver(id: string, input: BusDriverInput): Promise<BusDriver> {
+  const res = await managerFetch(`/bus-drivers/${id}`, { method: "PATCH", body: JSON.stringify(input) });
+  if (!res.ok) throw new Error(await extractError(res, "Failed to update bus driver."));
+  return (await res.json()) as BusDriver;
+}
+
+export async function deleteBusDriver(id: string): Promise<void> {
+  const res = await managerFetch(`/bus-drivers/${id}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(await extractError(res, "Failed to delete bus driver."));
 }
 
 // --- Dashboard summary -------------------------------------------------------
@@ -373,6 +420,9 @@ export interface ManagerAssignment {
   route_name: string | null;
   vehicle_id: string;
   vehicle_bus_number: string | null;
+  bus_driver_id?: string | null; // school module: linked bus_drivers row
+  bus_driver_name?: string | null; // enriched from bus_drivers
+  bus_driver_phone?: string | null;
   created_at?: string;
 }
 
@@ -391,6 +441,7 @@ export interface CreateAssignmentInput {
   shift_label?: string;
   start_time?: string;
   end_time?: string;
+  bus_driver_id?: string | null;
 }
 
 // Structured 409 payload from the backend when a driver/vehicle is double-booked.
@@ -829,6 +880,12 @@ export interface ManagerPassenger {
   university_id: string | null;
   route_id: string | null;
   route_name: string | null;
+  // School module (students):
+  parent_phone?: string | null;
+  parent_email?: string | null;
+  student_phone?: string | null;
+  grade?: string | null;
+  class_name?: string | null;
 }
 
 export interface CreatePassengerInput {
@@ -836,6 +893,12 @@ export interface CreatePassengerInput {
   email: string;
   university_id?: string;
   route_id: string;
+  // School module (students):
+  parent_phone?: string;
+  parent_email?: string;
+  student_phone?: string;
+  grade?: string;
+  class_name?: string;
 }
 
 export interface PassengerCreateResult {
@@ -861,6 +924,11 @@ export interface UpdatePassengerInput {
   university_id?: string | null;
   route_id?: string;
   is_active?: boolean;
+  parent_phone?: string | null;
+  parent_email?: string | null;
+  student_phone?: string | null;
+  grade?: string | null;
+  class_name?: string | null;
 }
 
 export async function updatePassenger(id: string, input: UpdatePassengerInput): Promise<void> {
@@ -892,12 +960,67 @@ export async function bulkCreatePassengers(rows: BulkPassengerRow[]): Promise<Bu
   return (await res.json()) as BulkResult;
 }
 
+// --- Attendance reports (School module, manager-only) ------------------------
+
+export interface AttendanceColumn {
+  key: string;
+  label: string;
+}
+
+export async function getAttendanceColumns(): Promise<{ columns: AttendanceColumn[]; default: string[] }> {
+  const res = await managerFetch("/attendance/columns");
+  if (!res.ok) throw new Error(await extractError(res, "Failed to load columns."));
+  return (await res.json()) as { columns: AttendanceColumn[]; default: string[] };
+}
+
+export interface AttendanceExportParams {
+  format: "xlsx" | "pdf";
+  columns: string[];
+  route_id?: string;
+  student_id?: string;
+  date_from?: string;
+  date_to?: string;
+}
+
+/** Fetch the export as a Blob and trigger a browser download. */
+export async function exportAttendance(p: AttendanceExportParams): Promise<void> {
+  const q = new URLSearchParams();
+  q.set("format", p.format);
+  if (p.columns.length) q.set("columns", p.columns.join(","));
+  if (p.route_id) q.set("route_id", p.route_id);
+  if (p.student_id) q.set("student_id", p.student_id);
+  if (p.date_from) q.set("date_from", p.date_from);
+  if (p.date_to) q.set("date_to", p.date_to);
+
+  const res = await managerFetch(`/attendance/export?${q.toString()}`);
+  if (!res.ok) throw new Error(await extractError(res, "Failed to export attendance."));
+  const blob = await res.blob();
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `attendance.${p.format}`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  window.URL.revokeObjectURL(url);
+}
+
 // --- History (trips + pings over a range) ------------------------------------
 
 export interface HistoryPing {
   lat: number;
   lng: number;
   recorded_at: string;
+}
+
+export interface HistoryStopVisit {
+  stop_id: string | null;
+  stop_name: string | null;
+  stop_order: number | null;
+  arrival_time: string | null;
+  departure_time: string | null;
+  planned_dwell_seconds: number | null;
+  actual_dwell_seconds: number | null;
 }
 
 export interface HistoryTrip {
@@ -914,6 +1037,7 @@ export interface HistoryTrip {
   started_at: string | null;
   ended_at: string | null;
   pings: HistoryPing[];
+  stop_visits: HistoryStopVisit[];
 }
 
 export interface HistoryParams {

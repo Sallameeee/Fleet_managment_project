@@ -30,9 +30,15 @@ DEFAULT_PASSENGER_PASSWORD = "123456"
 
 class PassengerCreate(BaseModel):
     name: str = Field(..., min_length=1)
-    email: str = Field(..., min_length=3)
+    email: str = Field(..., min_length=3)  # login email (parent's email in school orgs)
     university_id: Optional[str] = None
     route_id: str = Field(..., min_length=1)
+    # School module (students) — all optional so University is unaffected.
+    parent_phone: Optional[str] = None
+    parent_email: Optional[str] = None
+    student_phone: Optional[str] = None
+    grade: Optional[str] = None
+    class_name: Optional[str] = None
 
 
 class PassengerUpdate(BaseModel):
@@ -40,6 +46,15 @@ class PassengerUpdate(BaseModel):
     university_id: Optional[str] = None
     route_id: Optional[str] = None
     is_active: Optional[bool] = None
+    parent_phone: Optional[str] = None
+    parent_email: Optional[str] = None
+    student_phone: Optional[str] = None
+    grade: Optional[str] = None
+    class_name: Optional[str] = None
+
+
+# The school-only student detail columns on the `passengers` table.
+_STUDENT_FIELDS = ("parent_phone", "parent_email", "student_phone", "grade", "class_name")
 
 
 class BulkRow(BaseModel):
@@ -70,9 +85,17 @@ def _resolve_route(org_id: str, value: str) -> Optional[str]:
     return by_name.data[0]["id"] if by_name.data else None
 
 
-def _create_passenger(org_id: str, name: str, email: str, university_id: Optional[str], route_id: str) -> dict:
+def _create_passenger(
+    org_id: str,
+    name: str,
+    email: str,
+    university_id: Optional[str],
+    route_id: str,
+    extra: Optional[dict] = None,
+) -> dict:
     """Create the auth account + profile + passengers row. Raises HTTPException
-    on failure (with auth-account rollback)."""
+    on failure (with auth-account rollback). `extra` may carry the school-only
+    student fields (parent_phone, grade, …)."""
     created_id: Optional[str] = None
     try:
         auth = supabase.auth.admin.create_user(
@@ -108,9 +131,10 @@ def _create_passenger(org_id: str, name: str, email: str, university_id: Optiona
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Could not create passenger profile: {exc}")
 
     try:
-        supabase.table("passengers").insert(
-            {"id": created_id, "org_id": org_id, "university_id": university_id, "route_id": route_id}
-        ).execute()
+        passenger_row = {"id": created_id, "org_id": org_id, "university_id": university_id, "route_id": route_id}
+        if extra:
+            passenger_row.update({k: v for k, v in extra.items() if k in _STUDENT_FIELDS})
+        supabase.table("passengers").insert(passenger_row).execute()
     except Exception as exc:
         supabase.table("profiles").delete().eq("id", created_id).execute()
         _delete_auth_user(created_id)
@@ -128,7 +152,8 @@ def create_passenger(
     route_id = _resolve_route(org_id, body.route_id)
     if not route_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such route in your organization.")
-    _create_passenger(org_id, body.name.strip(), body.email.strip(), body.university_id, route_id)
+    extra = {f: getattr(body, f) for f in _STUDENT_FIELDS}
+    _create_passenger(org_id, body.name.strip(), body.email.strip(), body.university_id, route_id, extra)
     return {
         "email": body.email.strip(),
         "default_password": DEFAULT_PASSENGER_PASSWORD,
@@ -140,7 +165,11 @@ def create_passenger(
 def list_passengers(current_user: dict = Depends(require_permission("manage_passengers"))):
     org_id = current_user["org_id"]
     rows = (
-        supabase.table("passengers").select("id, university_id, route_id, created_at").eq("org_id", org_id).execute().data
+        supabase.table("passengers")
+        .select("id, university_id, route_id, parent_phone, parent_email, student_phone, grade, class_name, created_at")
+        .eq("org_id", org_id)
+        .execute()
+        .data
     )
     ids = [r["id"] for r in rows]
     profs, routes = {}, {}
@@ -164,6 +193,11 @@ def list_passengers(current_user: dict = Depends(require_permission("manage_pass
                 "university_id": r.get("university_id"),
                 "route_id": r.get("route_id"),
                 "route_name": routes.get(r.get("route_id")),
+                "parent_phone": r.get("parent_phone"),
+                "parent_email": r.get("parent_email"),
+                "student_phone": r.get("student_phone"),
+                "grade": r.get("grade"),
+                "class_name": r.get("class_name"),
             }
         )
     out.sort(key=lambda x: (x["name"] or "").lower())
@@ -192,6 +226,9 @@ def update_passenger(
     pax_update: dict = {}
     if "university_id" in body.model_fields_set:
         pax_update["university_id"] = body.university_id
+    for f in _STUDENT_FIELDS:
+        if f in body.model_fields_set:
+            pax_update[f] = getattr(body, f)
     if body.route_id is not None:
         rid = _resolve_route(org_id, body.route_id)
         if not rid:

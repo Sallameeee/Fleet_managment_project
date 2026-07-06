@@ -43,6 +43,9 @@ class OrganizationCreate(BaseModel):
         "Auto-generated from the name if omitted.",
     )
     plan: Literal["basic", "pro", "enterprise"] = "basic"
+    # Feature module. Defaults to 'university' so behaviour is unchanged for
+    # every existing org / any caller that omits it.
+    module: Literal["university", "school"] = "university"
     max_devices: int = 10
     monthly_fee: float = 0
     subscription_expiry: Optional[date] = None
@@ -50,6 +53,7 @@ class OrganizationCreate(BaseModel):
 
 class OrgUpdate(BaseModel):
     plan: Optional[Literal["basic", "pro", "enterprise"]] = None
+    module: Optional[Literal["university", "school"]] = None
     max_devices: Optional[int] = None
     monthly_fee: Optional[float] = None
     subscription_expiry: Optional[date] = None
@@ -196,7 +200,7 @@ def list_organizations(_admin: dict = Depends(require_super_admin)):
     orgs = (
         supabase.table("organizations")
         .select(
-            "id, name, slug, status, plan, max_devices, monthly_fee, "
+            "id, name, slug, status, plan, module, max_devices, monthly_fee, "
             "subscription_expiry, created_at"
         )
         .order("created_at", desc=True)
@@ -246,6 +250,7 @@ def create_organization(
             "phone": body.phone,
             "status": "active",
             "plan": body.plan,
+            "module": body.module,
             "max_devices": body.max_devices,
             "monthly_fee": body.monthly_fee,
             "subscription_expiry": (
