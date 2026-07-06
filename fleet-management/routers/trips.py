@@ -76,6 +76,15 @@ class PingIn(BaseModel):
     recorded_at: Optional[datetime] = None
 
 
+class StopVisitIn(BaseModel):
+    """The app reports reaching a stop (arrival) and, on departure, how long it
+    actually stayed. Called once on arrival (departure omitted) and again on
+    departure (with departure_time). Idempotent per (trip, stop)."""
+    stop_id: str = Field(..., min_length=1)
+    arrival_time: datetime
+    departure_time: Optional[datetime] = None
+
+
 def _enrich(trip: dict, driver_name=None, route_name=None,
             vehicle_bus_number=None, share_token=None) -> dict:
     """Shape a trip row for the response, with readable names attached."""
@@ -458,6 +467,122 @@ def post_pings(
     detection = _process_pings(trip, norm)
 
     return {"recorded": len(result.data), "trip_id": trip_id, "detection": detection}
+
+
+@router.get("/{trip_id}/route-stops")
+def trip_route_stops(
+    trip_id: str,
+    current_user: dict = Depends(require_role("driver")),
+):
+    """The ORDERED stops of the active trip's route, for the app's arrival timer.
+    Driver-facing (own active trip only)."""
+    trip = _load_own_active_trip(trip_id, current_user)
+    stops = (
+        supabase.table("route_stops")
+        .select("id, name, lat, lng, stop_order, dwell_minutes")
+        .eq("route_id", trip["route_id"])
+        .order("stop_order", desc=False)
+        .execute()
+        .data
+    )
+    return {"trip_id": trip_id, "route_id": trip["route_id"], "stops": stops}
+
+
+@router.post("/{trip_id}/stop-visits", status_code=status.HTTP_200_OK)
+def record_stop_visit(
+    trip_id: str,
+    body: StopVisitIn,
+    current_user: dict = Depends(require_role("driver")),
+):
+    """Record (upsert) the driver's visit to a stop: arrival, then departure.
+
+    Idempotent per (trip_id, stop_id): the app calls it on arrival (departure
+    omitted) and again on departure (with departure_time), always sending the
+    same arrival_time. We compute actual_dwell_seconds server-side and store the
+    planned dwell (route_stops.dwell_minutes * 60) for planned-vs-actual reports.
+    """
+    trip = _load_own_active_trip(trip_id, current_user)  # own + active
+    org_id = trip["org_id"]
+
+    st = (
+        supabase.table("route_stops")
+        .select("id, stop_order, dwell_minutes")
+        .eq("id", body.stop_id)
+        .eq("route_id", trip["route_id"])  # the stop must belong to THIS route
+        .limit(1)
+        .execute()
+        .data
+    )
+    if not st:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="That stop is not part of this trip's route.",
+        )
+    stop = st[0]
+
+    arrival = body.arrival_time
+    departure = body.departure_time
+    if arrival.tzinfo is None:
+        arrival = arrival.replace(tzinfo=timezone.utc)
+    if departure is not None and departure.tzinfo is None:
+        departure = departure.replace(tzinfo=timezone.utc)
+    actual = int((departure - arrival).total_seconds()) if departure else None
+    if actual is not None and actual < 0:
+        actual = 0  # clock skew guard
+
+    payload = {
+        "trip_id": trip_id,
+        "org_id": org_id,  # from the trip, never the body
+        "stop_id": body.stop_id,
+        "stop_order": stop["stop_order"],
+        "arrival_time": arrival.isoformat(),
+        "departure_time": departure.isoformat() if departure else None,
+        "planned_dwell_seconds": (stop["dwell_minutes"] or 0) * 60,
+        "actual_dwell_seconds": actual,
+    }
+    try:
+        row = (
+            supabase.table("stop_visits")
+            .upsert(payload, on_conflict="trip_id,stop_id")
+            .execute()
+            .data[0]
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Could not record stop visit: {exc}",
+        )
+    return row
+
+
+@router.get("/{trip_id}/stop-visits")
+def list_stop_visits(
+    trip_id: str,
+    current_user: dict = Depends(require_permission("manage_trips")),
+):
+    """Manager read of a trip's stop visits (for reports: planned vs actual dwell)."""
+    org_id = current_user["org_id"]
+    _load_org_trip(trip_id, org_id)  # org-scope guard
+
+    visits = (
+        supabase.table("stop_visits")
+        .select("id, stop_id, stop_order, arrival_time, departure_time, planned_dwell_seconds, actual_dwell_seconds")
+        .eq("trip_id", trip_id)
+        .eq("org_id", org_id)
+        .order("stop_order", desc=False)
+        .execute()
+        .data
+    )
+    stop_ids = {v["stop_id"] for v in visits if v.get("stop_id")}
+    names = {}
+    if stop_ids:
+        names = {
+            r["id"]: r["name"]
+            for r in supabase.table("route_stops").select("id, name").in_("id", list(stop_ids)).execute().data
+        }
+    for v in visits:
+        v["stop_name"] = names.get(v["stop_id"])
+    return {"count": len(visits), "trip_id": trip_id, "stop_visits": visits}
 
 
 def _load_active_rules(org_id: str) -> list:
