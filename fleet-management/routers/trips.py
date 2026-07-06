@@ -488,6 +488,47 @@ def trip_route_stops(
     return {"trip_id": trip_id, "route_id": trip["route_id"], "stops": stops}
 
 
+@router.get("/route-map/{route_id}")
+def route_map(
+    route_id: str,
+    current_user: dict = Depends(require_role("driver")),
+):
+    """Route polyline geometry + ordered stops for the driver's in-app map.
+
+    Org-scoped (the route must belong to the driver's organization) and does NOT
+    require an active trip, so the driver can preview the assigned route before
+    starting. Purely read-only; independent of tracking.
+    """
+    org_id = current_user["org_id"]
+    route = (
+        supabase.table("routes")
+        .select("id, name, color, geometry")
+        .eq("id", route_id)
+        .eq("org_id", org_id)  # the route must belong to the driver's org
+        .limit(1)
+        .execute()
+        .data
+    )
+    if not route:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Route not found.")
+    r = route[0]
+    stops = (
+        supabase.table("route_stops")
+        .select("id, name, lat, lng, stop_order")
+        .eq("route_id", route_id)
+        .order("stop_order", desc=False)
+        .execute()
+        .data
+    )
+    return {
+        "route_id": r["id"],
+        "name": r.get("name"),
+        "color": r.get("color"),
+        "geometry": r.get("geometry"),  # GeoJSON LineString, or null for older routes
+        "stops": stops,
+    }
+
+
 @router.post("/{trip_id}/stop-visits", status_code=status.HTTP_200_OK)
 def record_stop_visit(
     trip_id: str,
