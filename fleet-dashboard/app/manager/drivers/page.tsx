@@ -6,6 +6,7 @@ import {
   createDriver,
   updateDriver,
   deleteDriver,
+  bulkCreateDrivers,
   getManagerSlug,
   type ManagerDriver,
 } from "@/lib/manager";
@@ -13,10 +14,23 @@ import { useT } from "@/lib/i18n";
 import { useIsSchool } from "@/lib/module";
 import { useToast } from "@/lib/toast";
 import Button from "@/components/Button";
+import BulkImport from "@/components/BulkImport";
 import Input from "@/components/Input";
 import Modal from "@/components/Modal";
 import StatusBadge from "@/components/StatusBadge";
 import { EditIcon, TrashIcon } from "@/components/RowIcons";
+
+// Supervisors log into the app, so bulk rows include login credentials.
+const SUPERVISOR_COLUMNS = [
+  { key: "name", header: "name" },
+  { key: "username", header: "username", aliases: ["login", "user"] },
+  { key: "password", header: "password", aliases: ["pass"] },
+  { key: "phone", header: "phone" },
+];
+const SUPERVISOR_SAMPLE = [
+  { name: "Sara Adel", username: "sara.adel", password: "changeme1", phone: "0102-555-1212" },
+  { name: "Khaled Nabil", username: "khaled.nabil", password: "changeme2", phone: "0106-777-3434" },
+];
 
 const EMPTY = { name: "", username: "", password: "", phone: "", email: "", license_number: "", license_start_date: "", license_expiry_date: "" };
 
@@ -145,12 +159,18 @@ export default function ManagerDriversPage() {
           <h1 className="text-2xl font-semibold text-white">{isSchool ? t("nav.supervisors") : t("nav.drivers")}</h1>
           <p className="text-sm text-slate-400">{loading ? t("common.loading") : `${drivers.length}`}</p>
         </div>
-        <button
-          onClick={openModal}
-          className="rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-brand-sage"
-        >
-          + {dt("drivers.newDriver", "drivers.newSupervisor")}
-        </button>
+        <div className="flex items-center gap-2">
+          {/* Bulk import is school-only (supervisors). University drivers unchanged. */}
+          {isSchool && (
+            <BulkImport templateName="supervisors_template.csv" columns={SUPERVISOR_COLUMNS} sample={SUPERVISOR_SAMPLE} onImport={bulkCreateDrivers} onDone={load} />
+          )}
+          <button
+            onClick={openModal}
+            className="rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-brand-sage"
+          >
+            + {dt("drivers.newDriver", "drivers.newSupervisor")}
+          </button>
+        </div>
       </div>
 
       {error && (

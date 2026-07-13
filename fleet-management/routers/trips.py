@@ -568,16 +568,15 @@ def trip_students(trip_id: str, current_user: dict = Depends(require_role("drive
 
     students = (
         supabase.table("passengers")
-        .select("id, student_phone, parent_phone, grade, class_name")
+        .select("id, name, student_phone, parent_phone, grade, class_name")
         .eq("org_id", org_id)
         .eq("route_id", trip["route_id"])
         .execute()
         .data
     )
     ids = [s["id"] for s in students]
-    names, boarded = {}, {}
+    boarded = {}
     if ids:
-        names = {p["id"]: p["name"] for p in supabase.table("profiles").select("id, name").in_("id", ids).execute().data}
         att = (
             supabase.table("attendance")
             .select("student_id, boarded")
@@ -591,7 +590,7 @@ def trip_students(trip_id: str, current_user: dict = Depends(require_role("drive
     out = [
         {
             "student_id": s["id"],
-            "name": names.get(s["id"]),
+            "name": s.get("name"),
             "class_name": s.get("class_name"),
             "grade": s.get("grade"),
             "student_phone": s.get("student_phone"),

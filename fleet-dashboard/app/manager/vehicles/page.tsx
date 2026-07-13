@@ -6,16 +6,28 @@ import {
   createVehicle,
   updateVehicle,
   deleteVehicle,
+  bulkCreateVehicles,
   trackingUrl,
   type ManagerVehicle,
 } from "@/lib/manager";
 import { useT } from "@/lib/i18n";
 import { useToast } from "@/lib/toast";
 import Button from "@/components/Button";
+import BulkImport from "@/components/BulkImport";
 import Input from "@/components/Input";
 import Modal from "@/components/Modal";
 import StatusBadge from "@/components/StatusBadge";
 import { EditIcon, TrashIcon } from "@/components/RowIcons";
+
+const VEHICLE_COLUMNS = [
+  { key: "bus_number", header: "bus_number", aliases: ["bus number", "bus"] },
+  { key: "plate_number", header: "plate_number", aliases: ["plate", "plate number"] },
+  { key: "capacity", header: "capacity", aliases: ["seats"] },
+];
+const VEHICLE_SAMPLE = [
+  { bus_number: "BUS-101", plate_number: "ABC-1234", capacity: "40" },
+  { bus_number: "BUS-102", plate_number: "XYZ-5678", capacity: "52" },
+];
 
 export default function ManagerVehiclesPage() {
   const { t } = useT();
@@ -128,12 +140,15 @@ export default function ManagerVehiclesPage() {
           <h1 className="text-2xl font-semibold text-white">{t("nav.vehicles")}</h1>
           <p className="text-sm text-slate-400">{loading ? t("common.loading") : `${vehicles.length}`}</p>
         </div>
-        <button
-          onClick={openModal}
-          className="rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-brand-sage"
-        >
-          + {t("vehicles.newVehicle")}
-        </button>
+        <div className="flex items-center gap-2">
+          <BulkImport templateName="vehicles_template.csv" columns={VEHICLE_COLUMNS} sample={VEHICLE_SAMPLE} onImport={bulkCreateVehicles} onDone={load} />
+          <button
+            onClick={openModal}
+            className="rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-brand-sage"
+          >
+            + {t("vehicles.newVehicle")}
+          </button>
+        </div>
       </div>
 
       {error && (

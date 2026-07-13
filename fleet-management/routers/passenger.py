@@ -11,14 +11,171 @@ passenger can never read another route's drivers or any management data.
 
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, status
 
 from auth import require_role
+from capacity_logic import require_school_org
 from database import supabase
+from live_logic import LOCAL_TZ, driver_live_positions, pick_current_assignment
 
 router = APIRouter(prefix="/passenger", tags=["passenger"])
 
 ONLINE_WINDOW = timedelta(minutes=2)
+
+
+@router.get("/my-children")
+def my_children(current_user: dict = Depends(require_role("passenger"))):
+    """The students linked to the signed-in PARENT (school module). One parent
+    account can own several children (siblings). Feeds the upcoming parent UI's
+    child picker. Derived entirely from the authenticated parent — they pass
+    nothing. (For a University passenger, this simply returns their own record.)"""
+    parent_id = current_user["id"]
+    org_id = current_user["org_id"]
+
+    children = (
+        supabase.table("passengers")
+        .select("id, name, grade, class_name, route_id")
+        .eq("org_id", org_id)
+        .eq("parent_id", parent_id)
+        .execute()
+        .data
+    )
+    route_ids = list({c["route_id"] for c in children if c.get("route_id")})
+    routes = {}
+    if route_ids:
+        routes = {r["id"]: r["name"] for r in supabase.table("routes").select("id, name").in_("id", route_ids).execute().data}
+
+    out = [
+        {
+            "id": c["id"],  # the child's stable student id — a future change request references this
+            "name": c.get("name"),
+            "grade": c.get("grade"),
+            "class_name": c.get("class_name"),
+            "route_id": c.get("route_id"),
+            "route_name": routes.get(c.get("route_id")),
+        }
+        for c in children
+    ]
+    out.sort(key=lambda x: (x["name"] or "").lower())
+    return {"count": len(out), "children": out}
+
+
+@router.get("/children/{student_id}/track")
+def track_child(student_id: str, current_user: dict = Depends(require_role("passenger"))):
+    """Everything needed to track ONE of the parent's children today: the child's
+    EFFECTIVE route + stops, the live bus position (same source as the manager Full
+    View), the supervisor (name + phone), and the bus driver (name + phone — the
+    phone is meant to be visible to the parent). School orgs only; a parent can
+    only see their OWN child (parent_id must match)."""
+    parent_id = current_user["id"]
+    org_id = current_user["org_id"]
+    require_school_org(org_id)
+
+    st = (
+        supabase.table("passengers")
+        .select("id, name, grade, class_name, route_id")
+        .eq("id", student_id)
+        .eq("org_id", org_id)
+        .eq("parent_id", parent_id)  # OWN child only
+        .limit(1)
+        .execute()
+        .data
+    )
+    if not st:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="That child is not linked to your account.")
+    child = st[0]
+
+    # --- Today's EFFECTIVE route: an APPROVED change request for today overrides
+    # the child's normal route; otherwise the normal route applies. ---
+    today = datetime.now(LOCAL_TZ).date().isoformat()
+    cr = (
+        supabase.table("change_requests")
+        .select("requested_route_id, requested_stop")
+        .eq("org_id", org_id)
+        .eq("student_id", student_id)
+        .eq("request_date", today)
+        .eq("status", "approved")
+        .limit(1)
+        .execute()
+        .data
+    )
+    changed_today = bool(cr)
+    effective_route_id = cr[0]["requested_route_id"] if changed_today else child.get("route_id")
+    effective_stop = cr[0].get("requested_stop") if changed_today else None
+
+    result = {
+        "child": {"id": child["id"], "name": child.get("name"), "grade": child.get("grade"), "class_name": child.get("class_name")},
+        "changed_today": changed_today,
+        "effective_stop": effective_stop,
+        "route": None,
+        "bus": None,
+        "supervisor": None,
+        "bus_driver": None,
+        "position": None,
+        "online": False,
+    }
+    if not effective_route_id:
+        return result  # no route assigned yet
+
+    # Route + ordered stops.
+    r = supabase.table("routes").select("id, name, color, geometry").eq("id", effective_route_id).eq("org_id", org_id).limit(1).execute().data
+    route = r[0] if r else {}
+    stops = (
+        supabase.table("route_stops")
+        .select("id, name, lat, lng, stop_order")
+        .eq("route_id", effective_route_id)
+        .order("stop_order", desc=False)
+        .execute()
+        .data
+    )
+    result["route"] = {
+        "id": route.get("id"),
+        "name": route.get("name"),
+        "color": route.get("color"),
+        "geometry": route.get("geometry"),
+        "stops": stops,
+    }
+
+    # Today's assignment for the effective route → supervisor (app user), bus,
+    # bus driver. Pick the current one by time if there are several shifts.
+    assigns = (
+        supabase.table("assignments")
+        .select("driver_id, vehicle_id, bus_driver_id, start_time, end_time")
+        .eq("org_id", org_id)
+        .eq("route_id", effective_route_id)
+        .eq("trip_date", today)
+        .execute()
+        .data
+    )
+    a = pick_current_assignment(assigns, datetime.now(LOCAL_TZ).time()) if assigns else None
+    supervisor_driver_id = None
+    if a:
+        supervisor_driver_id = a.get("driver_id")
+        if supervisor_driver_id:
+            sp = supabase.table("profiles").select("name, phone").eq("id", supervisor_driver_id).limit(1).execute().data
+            if sp:
+                result["supervisor"] = {"name": sp[0].get("name"), "phone": sp[0].get("phone")}
+        if a.get("bus_driver_id"):
+            bd = supabase.table("bus_drivers").select("name, phone").eq("id", a["bus_driver_id"]).eq("org_id", org_id).limit(1).execute().data
+            if bd:
+                result["bus_driver"] = {"name": bd[0].get("name"), "phone": bd[0].get("phone")}  # phone visible to parent
+        if a.get("vehicle_id"):
+            v = supabase.table("vehicles").select("bus_number, plate_number").eq("id", a["vehicle_id"]).limit(1).execute().data
+            if v:
+                result["bus"] = {"bus_number": v[0].get("bus_number"), "plate_number": v[0].get("plate_number")}
+
+    # Live position: the SAME feed the manager Full View uses. Match the child's
+    # bus by its supervisor (driver), falling back to the route.
+    feed = driver_live_positions(org_id)
+    entry = None
+    if supervisor_driver_id:
+        entry = next((d for d in feed if d["driver_id"] == supervisor_driver_id), None)
+    if entry is None:
+        entry = next((d for d in feed if d.get("route_id") == effective_route_id), None)
+    if entry:
+        result["position"] = entry.get("position")
+        result["online"] = entry.get("online", False)
+    return result
 
 
 @router.get("/live")

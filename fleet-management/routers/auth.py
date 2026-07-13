@@ -242,11 +242,22 @@ def passenger_login(body: PassengerLoginRequest):
             status_code=status.HTTP_403_FORBIDDEN,
             detail="This account has been deactivated. Contact your administrator.",
         )
+    # Surface the org's module so the passenger app knows which view to show:
+    # 'school' -> the account is a PARENT (tracks children); 'university' -> a
+    # STUDENT (tracks themselves). Defaults to 'university'.
+    org_module = "university"
+    try:
+        _o = supabase.table("organizations").select("module").eq("id", profile.get("org_id")).limit(1).execute()
+        if _o.data and _o.data[0].get("module"):
+            org_module = _o.data[0]["module"]
+    except Exception:
+        pass
     return {
         "access_token": data.get("access_token"),
         "token_type": data.get("token_type", "bearer"),
         "expires_in": data.get("expires_in"),
         "user": {"id": profile["id"], "name": profile.get("name"), "role": "passenger", "org_id": profile.get("org_id")},
+        "module": org_module,
         "must_change_password": bool(profile.get("must_change_password")),
     }
 

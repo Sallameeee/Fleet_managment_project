@@ -11,7 +11,7 @@ never call them.
 """
 
 from datetime import date
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
@@ -20,6 +20,22 @@ from auth import require_permission
 from database import supabase
 
 router = APIRouter(prefix="/bus-drivers", tags=["bus-drivers"])
+
+
+def _bulk_msg(exc: Exception) -> str:
+    return str(exc.detail) if isinstance(exc, HTTPException) else str(exc)
+
+
+def _norm_date(value: Optional[str]) -> Optional[str]:
+    """Validate a 'YYYY-MM-DD' date string (blank -> None). Raises ValueError on
+    a malformed value so only that CSV row fails."""
+    v = (value or "").strip()
+    if not v:
+        return None
+    try:
+        return date.fromisoformat(v).isoformat()
+    except ValueError:
+        raise ValueError(f"Invalid date '{v}' (use YYYY-MM-DD).")
 
 _SELECT = "id, name, phone, license_number, license_start_date, license_end_date, created_at"
 _RETURN_KEYS = ("id", "name", "phone", "license_number", "license_start_date", "license_end_date", "created_at")
@@ -134,3 +150,46 @@ def delete_bus_driver(
     _get_owned(bus_driver_id, org_id)
     supabase.table("bus_drivers").delete().eq("id", bus_driver_id).eq("org_id", org_id).execute()
     return {"deleted": bus_driver_id}
+
+
+class BulkBusDriverRow(BaseModel):
+    name: Optional[str] = None
+    phone: Optional[str] = None
+    license_number: Optional[str] = None
+    license_start_date: Optional[str] = None
+    license_end_date: Optional[str] = None
+
+
+class BulkBusDriverRequest(BaseModel):
+    rows: List[BulkBusDriverRow]
+
+
+@router.post("/bulk")
+def bulk_create_bus_drivers(
+    body: BulkBusDriverRequest,
+    current_user: dict = Depends(require_permission("manage_drivers")),
+):
+    """Create many bus drivers from parsed rows, each attempted independently with
+    per-row error reporting (CSV row number + reason)."""
+    org_id = current_user["org_id"]
+    created = 0
+    errors = []
+    for i, row in enumerate(body.rows):
+        label = (row.name or "").strip()
+        try:
+            if not label:
+                raise ValueError("Name is required.")
+            supabase.table("bus_drivers").insert(
+                {
+                    "org_id": org_id,
+                    "name": label,
+                    "phone": (row.phone or "").strip() or None,
+                    "license_number": (row.license_number or "").strip() or None,
+                    "license_start_date": _norm_date(row.license_start_date),
+                    "license_end_date": _norm_date(row.license_end_date),
+                }
+            ).execute()
+            created += 1
+        except Exception as exc:
+            errors.append({"row": i + 2, "label": label, "error": _bulk_msg(exc)})
+    return {"created": created, "failed": len(errors), "errors": errors}

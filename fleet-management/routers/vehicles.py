@@ -4,7 +4,7 @@ Same tenant-isolation pattern as drivers: the org is always the caller's own
 org (from their token), never anything supplied in the request.
 """
 
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
@@ -13,6 +13,10 @@ from auth import require_permission
 from database import supabase
 
 router = APIRouter(prefix="/vehicles", tags=["vehicles"])
+
+
+def _bulk_msg(exc: Exception) -> str:
+    return str(exc.detail) if isinstance(exc, HTTPException) else str(exc)
 
 
 class VehicleCreate(BaseModel):
@@ -59,6 +63,53 @@ def create_vehicle(
         "is_active": v["is_active"],
         "created_at": v["created_at"],
     }
+
+
+class BulkVehicleRow(BaseModel):
+    bus_number: Optional[str] = None
+    plate_number: Optional[str] = None
+    capacity: Optional[str] = None  # parsed per-row so a bad value fails only its row
+
+
+class BulkVehicleRequest(BaseModel):
+    rows: List[BulkVehicleRow]
+
+
+@router.post("/bulk")
+def bulk_create_vehicles(
+    body: BulkVehicleRequest,
+    current_user: dict = Depends(require_permission("manage_vehicles")),
+):
+    """Create many vehicles from parsed rows, each attempted independently with
+    per-row error reporting (CSV row number + reason)."""
+    org_id = current_user["org_id"]
+    created = 0
+    errors = []
+    for i, row in enumerate(body.rows):
+        label = (row.bus_number or "").strip()
+        try:
+            if not label:
+                raise ValueError("Bus number is required.")
+            capacity = None
+            cap_raw = (row.capacity or "").strip()
+            if cap_raw:
+                try:
+                    capacity = int(float(cap_raw))
+                except ValueError:
+                    raise ValueError("Capacity must be a whole number.")
+            supabase.table("vehicles").insert(
+                {
+                    "org_id": org_id,
+                    "bus_number": label,
+                    "plate_number": (row.plate_number or "").strip() or None,
+                    "capacity": capacity,
+                    "is_active": True,
+                }
+            ).execute()
+            created += 1
+        except Exception as exc:
+            errors.append({"row": i + 2, "label": label, "error": _bulk_msg(exc)})
+    return {"created": created, "failed": len(errors), "errors": errors}
 
 
 @router.get("")

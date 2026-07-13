@@ -6,7 +6,7 @@ to the CALLER'S org (taken from their token, never the request body).
 """
 
 from datetime import date, datetime, timedelta, timezone
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
@@ -49,80 +49,127 @@ def _looks_like_email_taken(exc: Exception) -> bool:
     return "already" in text and ("registered" in text or "exist" in text)
 
 
+def _provision_driver(
+    org_id: str,
+    *,
+    name: str,
+    username: str,
+    password: str,
+    phone: Optional[str] = None,
+    email: Optional[str] = None,
+    license_number: Optional[str] = None,
+    license_start_date: Optional[str] = None,  # ISO string or None
+    license_expiry_date: Optional[str] = None,
+) -> dict:
+    """Create the auth login + driver profile (role='driver'), scoped to `org_id`,
+    rolling back the auth user if the profile insert fails. Raises HTTPException on
+    any failure. Shared by the single-create endpoint and the bulk import."""
+    login_email = email or synthesize_login_email(username, org_id)
+    created_user_id: Optional[str] = None
+    try:
+        auth_response = supabase.auth.admin.create_user(
+            {"email": login_email, "password": password, "email_confirm": True}
+        )
+        created_user_id = auth_response.user.id
+    except Exception as exc:
+        if _looks_like_email_taken(exc):
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"A login account for '{login_email}' already exists.")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Could not create login account for the driver: {exc}")
+
+    try:
+        profile_payload = {
+            "id": created_user_id,
+            "org_id": org_id,
+            "name": name,
+            "email": login_email,
+            "phone": phone,
+            "username": username,
+            "role": "driver",
+            "permissions": {},
+            "is_active": True,
+            "license_number": license_number,
+            "license_start_date": license_start_date,
+            "license_expiry_date": license_expiry_date,
+        }
+        result = supabase.table("profiles").insert(profile_payload).execute()
+    except Exception as exc:
+        _delete_auth_user(created_user_id)  # never orphan an auth account
+        if _looks_like_duplicate(exc):
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"Username '{username}' is already taken in your organization.")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Could not create driver profile (login account was rolled back): {exc}")
+    return result.data[0]
+
+
+def _bulk_msg(exc: Exception) -> str:
+    return str(exc.detail) if isinstance(exc, HTTPException) else str(exc)
+
+
 @router.post("", status_code=status.HTTP_201_CREATED)
 def create_driver(
     body: DriverCreate,
     current_user: dict = Depends(require_permission("manage_drivers")),
 ):
-    # Tenant isolation: the org is ALWAYS the caller's own org, from their
-    # token/profile — never anything supplied in the request body.
+    # Tenant isolation: org is ALWAYS the caller's own, from their token.
     org_id = current_user["org_id"]
-
-    # Drivers may not have real emails; synthesize an org-scoped one so the
-    # same username can exist in other orgs without colliding in Supabase Auth.
-    login_email = body.email or synthesize_login_email(body.username, org_id)
-
-    created_user_id: Optional[str] = None
-
-    # --- Step a: create the auth login account (auto-confirmed) ---
-    try:
-        auth_response = supabase.auth.admin.create_user(
-            {
-                "email": login_email,
-                "password": body.password,
-                "email_confirm": True,
-            }
-        )
-        created_user_id = auth_response.user.id
-    except Exception as exc:
-        if _looks_like_email_taken(exc):
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"A login account for '{login_email}' already exists.",
-            )
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Could not create login account for the driver: {exc}",
-        )
-
-    # --- Step b: insert the driver profile, scoped to the caller's org ---
-    try:
-        profile_payload = {
-            "id": created_user_id,  # matches the auth user id
-            "org_id": org_id,  # caller's org, NOT from the body
-            "name": body.name,
-            "email": login_email,
-            "phone": body.phone,
-            "username": body.username,
-            "role": "driver",
-            "permissions": {},  # drivers get no management permissions
-            "is_active": True,
-            "license_number": body.license_number,
-            "license_start_date": body.license_start_date.isoformat() if body.license_start_date else None,
-            "license_expiry_date": body.license_expiry_date.isoformat() if body.license_expiry_date else None,
-        }
-        result = supabase.table("profiles").insert(profile_payload).execute()
-    except Exception as exc:
-        # Roll back the auth user so a failed insert never orphans an account.
-        _delete_auth_user(created_user_id)
-        if _looks_like_duplicate(exc):
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"Username '{body.username}' is already taken in your organization.",
-            )
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Could not create driver profile (login account was rolled back): {exc}",
-        )
-
-    driver = result.data[0]
+    driver = _provision_driver(
+        org_id,
+        name=body.name,
+        username=body.username,
+        password=body.password,
+        phone=body.phone,
+        email=body.email,
+        license_number=body.license_number,
+        license_start_date=body.license_start_date.isoformat() if body.license_start_date else None,
+        license_expiry_date=body.license_expiry_date.isoformat() if body.license_expiry_date else None,
+    )
     return {
         "id": driver["id"],
         "name": driver["name"],
         "username": driver["username"],
-        "login_email": login_email,
+        "login_email": driver["email"],
         "role": driver["role"],
     }
+
+
+class BulkDriverRow(BaseModel):
+    name: Optional[str] = None
+    username: Optional[str] = None
+    password: Optional[str] = None
+    phone: Optional[str] = None
+
+
+class BulkDriverRequest(BaseModel):
+    rows: List[BulkDriverRow]
+
+
+@router.post("/bulk")
+def bulk_create_drivers(
+    body: BulkDriverRequest,
+    current_user: dict = Depends(require_permission("manage_drivers")),
+):
+    """Create many drivers/supervisors from parsed rows. Each row is attempted
+    independently; per-row failures (missing field, duplicate username) are
+    reported with the CSV row number so one bad row can't break the batch."""
+    org_id = current_user["org_id"]
+    created = 0
+    errors = []
+    for i, row in enumerate(body.rows):
+        label = (row.username or "").strip() or (row.name or "").strip()
+        try:
+            name = (row.name or "").strip()
+            username = (row.username or "").strip()
+            password = row.password or ""
+            if not name:
+                raise ValueError("Name is required.")
+            if not username:
+                raise ValueError("Username is required.")
+            if len(password) < 6:
+                raise ValueError("Password must be at least 6 characters.")
+            _provision_driver(org_id, name=name, username=username, password=password, phone=(row.phone or "").strip() or None)
+            created += 1
+        except Exception as exc:
+            errors.append({"row": i + 2, "label": label, "error": _bulk_msg(exc)})  # +2: header + 1-indexed
+    return {"created": created, "failed": len(errors), "errors": errors}
 
 
 @router.get("")

@@ -905,6 +905,7 @@ export interface PassengerCreateResult {
   email: string;
   default_password: string;
   must_change_password: boolean;
+  parent_created?: boolean; // school: false when an existing parent was reused (siblings)
 }
 
 export async function listPassengers(): Promise<ManagerPassenger[]> {
@@ -951,7 +952,7 @@ export interface BulkPassengerRow {
 export interface BulkResult {
   created: number;
   failed: number;
-  errors: { row: number; email: string; error: string }[];
+  errors: { row: number; error: string; label?: string }[];
 }
 
 export async function bulkCreatePassengers(rows: BulkPassengerRow[]): Promise<BulkResult> {
@@ -959,6 +960,32 @@ export async function bulkCreatePassengers(rows: BulkPassengerRow[]): Promise<Bu
   if (!res.ok) throw new Error(await extractError(res, "Failed to upload passengers."));
   return (await res.json()) as BulkResult;
 }
+
+/** Generic bulk import: POST { rows } to `path`, returns per-row results. */
+export async function bulkImport(path: string, rows: Record<string, string>[]): Promise<BulkResult> {
+  const res = await managerFetch(path, { method: "POST", body: JSON.stringify({ rows }) });
+  if (!res.ok) throw new Error(await extractError(res, "Bulk upload failed."));
+  return (await res.json()) as BulkResult;
+}
+
+// --- School settings (change-request cutoff time) ---------------------------
+
+export async function getSchoolSettings(): Promise<{ change_cutoff_time: string }> {
+  const res = await managerFetch("/school/settings");
+  if (!res.ok) throw new Error(await extractError(res, "Failed to load school settings."));
+  return (await res.json()) as { change_cutoff_time: string };
+}
+
+export async function updateSchoolCutoff(change_cutoff_time: string): Promise<{ change_cutoff_time: string }> {
+  const res = await managerFetch("/school/settings", { method: "PUT", body: JSON.stringify({ change_cutoff_time }) });
+  if (!res.ok) throw new Error(await extractError(res, "Failed to save the cutoff time."));
+  return (await res.json()) as { change_cutoff_time: string };
+}
+
+export const bulkCreateVehicles = (rows: Record<string, string>[]) => bulkImport("/vehicles/bulk", rows);
+export const bulkCreateBusDrivers = (rows: Record<string, string>[]) => bulkImport("/bus-drivers/bulk", rows);
+export const bulkCreateDrivers = (rows: Record<string, string>[]) => bulkImport("/drivers/bulk", rows);
+export const bulkCreateStudents = (rows: Record<string, string>[]) => bulkImport("/passengers/bulk-students", rows);
 
 // --- Attendance reports (School module, manager-only) ------------------------
 

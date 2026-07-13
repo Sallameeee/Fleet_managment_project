@@ -4,6 +4,8 @@ import { useCallback, useEffect, useState } from "react";
 import {
   getTrackingHours,
   setTrackingHours,
+  getSchoolSettings,
+  updateSchoolCutoff,
   listUsers,
   createUser,
   updateUser,
@@ -13,6 +15,7 @@ import {
   type StaffRole,
 } from "@/lib/manager";
 import { useT } from "@/lib/i18n";
+import { useIsSchool } from "@/lib/module";
 import { useToast } from "@/lib/toast";
 import Button from "@/components/Button";
 import Input from "@/components/Input";
@@ -33,9 +36,20 @@ function permsFor(role: StaffRole): Record<string, boolean> {
   return Object.fromEntries(MANAGER_PERMISSIONS.map((p) => [p, ROLE_DEFAULTS[role].includes(p)]));
 }
 
+type SettingsTab = "tracking" | "users" | "centers" | "school";
+
 export default function ManagerSettingsPage() {
   const { t } = useT();
-  const [tab, setTab] = useState<"tracking" | "users" | "centers">("tracking");
+  const isSchool = useIsSchool();
+  const [tab, setTab] = useState<SettingsTab>("tracking");
+
+  // School orgs get an extra "School" tab; University never sees it.
+  const tabs: SettingsTab[] = isSchool ? ["tracking", "users", "centers", "school"] : ["tracking", "users", "centers"];
+  const tabLabel = (key: SettingsTab) =>
+    key === "tracking" ? t("settings.tabTracking")
+      : key === "users" ? t("settings.tabUsers")
+      : key === "centers" ? t("settings.tabCenters")
+      : t("settings.tabSchool");
 
   return (
     <div className="space-y-6">
@@ -45,19 +59,76 @@ export default function ManagerSettingsPage() {
       </div>
 
       <div className="flex gap-1 border-b border-ink-800">
-        {(["tracking", "users", "centers"] as const).map((key) => (
+        {tabs.map((key) => (
           <button
             key={key}
             onClick={() => setTab(key)}
             className={"rounded-t-lg px-4 py-2 text-sm font-medium transition-colors " + (tab === key ? "border-b-2 border-brand text-white" : "text-slate-400 hover:text-white")}
           >
-            {key === "tracking" ? t("settings.tabTracking") : key === "users" ? t("settings.tabUsers") : t("settings.tabCenters")}
+            {tabLabel(key)}
           </button>
         ))}
       </div>
 
-      {tab === "tracking" ? <TrackingTab /> : tab === "users" ? <UsersTab /> : <CentersManager />}
+      {tab === "tracking" ? <TrackingTab /> : tab === "users" ? <UsersTab /> : tab === "school" ? <SchoolTab /> : <CentersManager />}
     </div>
+  );
+}
+
+function SchoolTab() {
+  const { t } = useT();
+  const [cutoff, setCutoff] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    getSchoolSettings()
+      .then((s) => setCutoff((s.change_cutoff_time || "").slice(0, 5)))
+      .catch((e) => setError(e instanceof Error ? e.message : t("common.loadFailed")))
+      .finally(() => setLoading(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function handleSave(e: React.FormEvent) {
+    e.preventDefault();
+    setSaving(true);
+    setError(null);
+    setSaved(false);
+    try {
+      const s = await updateSchoolCutoff(cutoff);
+      setCutoff((s.change_cutoff_time || "").slice(0, 5));
+      setSaved(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t("common.failed"));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (loading) return <div className="text-slate-500">{t("common.loading")}</div>;
+
+  return (
+    <form onSubmit={handleSave} className="max-w-xl space-y-4 rounded-xl border border-ink-800 bg-ink-900/50 p-5">
+      <div>
+        <h2 className="text-lg font-semibold text-white">{t("settings.cutoffTitle")}</h2>
+        <p className="mt-1 text-sm text-slate-400">{t("settings.cutoffHelp")}</p>
+      </div>
+      <label className="block max-w-[200px]">
+        <span className="mb-1.5 block text-sm font-medium text-slate-300">{t("settings.cutoffLabel")}</span>
+        <input
+          type="time"
+          value={cutoff}
+          onChange={(e) => setCutoff(e.target.value)}
+          required
+          className="w-full rounded-lg border border-ink-700 bg-ink-850 px-3 py-2.5 text-slate-100 focus:border-brand focus:outline-none"
+        />
+      </label>
+      {error && <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-300">{error}</div>}
+      {saved && <div className="rounded-lg border border-brand/30 bg-brand/10 px-3 py-2 text-sm text-brand-sage">{t("settings.saved")}</div>}
+      <Button type="submit" loading={saving} className="w-auto px-6">{t("common.save")}</Button>
+    </form>
   );
 }
 

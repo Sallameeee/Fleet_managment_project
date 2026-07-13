@@ -7,6 +7,7 @@ login using the student's email, with a shared default password and the
 login (see routers/auth.py: /auth/passenger/login + /auth/change-password).
 """
 
+import logging
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -16,6 +17,7 @@ from auth import require_permission
 from database import supabase
 
 router = APIRouter(prefix="/passengers", tags=["passengers"])
+log = logging.getLogger("passengers")
 
 # ---------------------------------------------------------------------------
 # SECURITY TRADEOFF (intentional, temporary): every auto-created passenger gets
@@ -78,10 +80,15 @@ def _delete_auth_user(user_id: str) -> None:
 def _resolve_route(org_id: str, value: str) -> Optional[str]:
     """Resolve a route by id first, then by name, within the org. Returns the
     route id or None."""
-    by_id = supabase.table("routes").select("id").eq("id", value).eq("org_id", org_id).limit(1).execute()
-    if by_id.data:
-        return by_id.data[0]["id"]
-    by_name = supabase.table("routes").select("id").eq("name", value).eq("org_id", org_id).limit(1).execute()
+    # Try by id only when it looks like a UUID (avoids a 22P02 error when a plain
+    # route NAME is passed to an id/uuid column in the bulk path).
+    if "-" in value and len(value) >= 32:
+        by_id = supabase.table("routes").select("id").eq("id", value).eq("org_id", org_id).limit(1).execute()
+        if by_id.data:
+            return by_id.data[0]["id"]
+    # Case-insensitive exact name match (no wildcards) so "maadi morning" matches
+    # "Maadi Morning".
+    by_name = supabase.table("routes").select("id").ilike("name", value).eq("org_id", org_id).limit(1).execute()
     return by_name.data[0]["id"] if by_name.data else None
 
 
@@ -131,7 +138,8 @@ def _create_passenger(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Could not create passenger profile: {exc}")
 
     try:
-        passenger_row = {"id": created_id, "org_id": org_id, "university_id": university_id, "route_id": route_id}
+        # University passenger: the student IS their own login, so parent_id = self.
+        passenger_row = {"id": created_id, "org_id": org_id, "name": name, "parent_id": created_id, "university_id": university_id, "route_id": route_id}
         if extra:
             passenger_row.update({k: v for k, v in extra.items() if k in _STUDENT_FIELDS})
         supabase.table("passengers").insert(passenger_row).execute()
@@ -141,6 +149,73 @@ def _create_passenger(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Could not create passenger record: {exc}")
 
     return prof
+
+
+# ── School parent → students model ───────────────────────────────────────────
+def _get_or_create_parent(org_id: str, parent_email: str) -> tuple:
+    """Resolve the PARENT account for `parent_email` in this org, creating it once
+    if missing. Returns (parent_profile_id, created_bool). Siblings reuse the same
+    parent — no duplicate login. The parent is a profiles row (role='passenger')
+    that owns the login (parent tracks the bus)."""
+    parent_email = parent_email.strip()
+    found = (
+        supabase.table("profiles")
+        .select("id")
+        .eq("org_id", org_id)
+        .eq("email", parent_email)
+        .eq("role", "passenger")
+        .limit(1)
+        .execute()
+    )
+    if found.data:
+        return found.data[0]["id"], False  # reuse existing parent (siblings)
+
+    try:
+        auth = supabase.auth.admin.create_user(
+            {"email": parent_email, "password": DEFAULT_PASSENGER_PASSWORD, "email_confirm": True}
+        )
+        parent_id = auth.user.id
+    except Exception as exc:
+        text = str(exc).lower()
+        if "already" in text and ("registered" in text or "exist" in text):
+            # In Auth but not a passenger profile in THIS org (e.g. a staff email
+            # or a parent in another org). A genuine conflict — report it per row.
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"The email '{parent_email}' is already registered to another account.")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Could not create parent login: {exc}")
+
+    try:
+        supabase.table("profiles").insert(
+            {
+                "id": parent_id,
+                "org_id": org_id,
+                "name": parent_email,  # parent logs in by email; UI can rename later
+                "email": parent_email,
+                "username": parent_email,
+                "role": "passenger",
+                "permissions": {},
+                "is_active": True,
+                "must_change_password": True,
+            }
+        ).execute()
+    except Exception as exc:
+        _delete_auth_user(parent_id)
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Could not create parent profile: {exc}")
+    return parent_id, True
+
+
+def _insert_student(org_id: str, parent_id: str, name: str, route_id: str, extra: dict) -> dict:
+    """Insert one STUDENT row linked to a parent. No login for the student."""
+    row = {"org_id": org_id, "parent_id": parent_id, "name": name, "route_id": route_id}
+    row.update({k: v for k, v in extra.items() if k in _STUDENT_FIELDS})
+    return supabase.table("passengers").insert(row).execute().data[0]
+
+
+def _create_student_by_parent_email(org_id: str, name: str, parent_email: str, route_id: str, extra: dict) -> bool:
+    """Create a student, reusing (or creating) the parent by email. Returns whether
+    a NEW parent login was created (so the UI can show credentials once)."""
+    parent_id, created = _get_or_create_parent(org_id, parent_email)
+    _insert_student(org_id, parent_id, name, route_id, extra)
+    return created
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
@@ -153,11 +228,25 @@ def create_passenger(
     if not route_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such route in your organization.")
     extra = {f: getattr(body, f) for f in _STUDENT_FIELDS}
+
+    # School student: parent_email present → parent→student model (reuse siblings).
+    if body.parent_email and body.parent_email.strip():
+        parent_email = body.parent_email.strip()
+        created = _create_student_by_parent_email(org_id, body.name.strip(), parent_email, route_id, extra)
+        return {
+            "email": parent_email,
+            "default_password": DEFAULT_PASSENGER_PASSWORD if created else "",
+            "must_change_password": created,
+            "parent_created": created,
+        }
+
+    # University passenger: unchanged (the student is their own login).
     _create_passenger(org_id, body.name.strip(), body.email.strip(), body.university_id, route_id, extra)
     return {
         "email": body.email.strip(),
         "default_password": DEFAULT_PASSENGER_PASSWORD,
         "must_change_password": True,
+        "parent_created": True,
     }
 
 
@@ -166,7 +255,7 @@ def list_passengers(current_user: dict = Depends(require_permission("manage_pass
     org_id = current_user["org_id"]
     rows = (
         supabase.table("passengers")
-        .select("id, university_id, route_id, parent_phone, parent_email, student_phone, grade, class_name, created_at")
+        .select("id, name, university_id, route_id, parent_phone, parent_email, student_phone, grade, class_name, created_at")
         .eq("org_id", org_id)
         .execute()
         .data
@@ -174,6 +263,8 @@ def list_passengers(current_user: dict = Depends(require_permission("manage_pass
     ids = [r["id"] for r in rows]
     profs, routes = {}, {}
     if ids:
+        # University students have their own profile (id == passengers.id); school
+        # students don't (only the parent does), so this join simply misses them.
         profs = {
             p["id"]: p
             for p in supabase.table("profiles").select("id, name, email, is_active").in_("id", ids).execute().data
@@ -187,8 +278,8 @@ def list_passengers(current_user: dict = Depends(require_permission("manage_pass
         out.append(
             {
                 "id": r["id"],
-                "name": p.get("name"),
-                "email": p.get("email"),
+                "name": r.get("name") or p.get("name"),  # student name lives on the student row now
+                "email": p.get("email") or r.get("parent_email"),  # University = student login; school = parent email
                 "is_active": p.get("is_active", True),
                 "university_id": r.get("university_id"),
                 "route_id": r.get("route_id"),
@@ -215,15 +306,18 @@ def update_passenger(
     if not existing.data:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Passenger not found.")
 
+    # is_active lives on the profile (University students; parent for school).
     prof_update: dict = {}
     if body.name is not None:
-        prof_update["name"] = body.name
+        prof_update["name"] = body.name  # keeps the University student's profile name in sync
     if body.is_active is not None:
         prof_update["is_active"] = body.is_active
     if prof_update:
         supabase.table("profiles").update(prof_update).eq("id", passenger_id).eq("org_id", org_id).execute()
 
     pax_update: dict = {}
+    if body.name is not None:
+        pax_update["name"] = body.name  # student name now lives on the student row
     if "university_id" in body.model_fields_set:
         pax_update["university_id"] = body.university_id
     for f in _STUDENT_FIELDS:
@@ -275,7 +369,78 @@ def bulk_create(
             _create_passenger(org_id, row.name.strip(), row.email.strip(), row.university_id, route_id)
             created += 1
         except HTTPException as exc:
-            errors.append({"row": i + 2, "email": row.email, "error": str(exc.detail)})  # +2: header + 1-indexed
+            errors.append({"row": i + 2, "label": row.email, "error": str(exc.detail)})  # +2: header + 1-indexed
         except Exception as exc:
-            errors.append({"row": i + 2, "email": row.email, "error": str(exc)})
+            errors.append({"row": i + 2, "label": row.email, "error": str(exc)})
+    return {"created": created, "failed": len(errors), "errors": errors}
+
+
+class BulkStudentRow(BaseModel):
+    name: Optional[str] = None
+    parent_phone: Optional[str] = None
+    parent_email: Optional[str] = None  # the login (the parent tracks the bus)
+    student_phone: Optional[str] = None
+    grade: Optional[str] = None
+    class_name: Optional[str] = None
+    route: Optional[str] = None  # route id OR name
+
+
+class BulkStudentRequest(BaseModel):
+    rows: List[BulkStudentRow]
+
+
+@router.post("/bulk-students")
+def bulk_create_students(
+    body: BulkStudentRequest,
+    current_user: dict = Depends(require_permission("manage_passengers")),
+):
+    """Bulk-create STUDENTS (school module) with the CURRENT fields. Uses the SAME
+    working create path as the single-student form — role='passenger', the parent
+    email as the login — so it can't hit the enum/role error. Each row is attempted
+    independently with per-row error reporting."""
+    org_id = current_user["org_id"]
+    created = 0
+    errors = []
+    log.info("bulk-students: received %s rows for org %s", len(body.rows), org_id)
+    for i, row in enumerate(body.rows):
+        rownum = i + 2  # +2: header row + 1-indexed
+        label = (row.name or "").strip() or (row.parent_email or "").strip()
+        # Log EXACTLY what was parsed from this row (reveals header/parse issues:
+        # all-empty values mean the CSV headers didn't map).
+        log.info("bulk-students row %s parsed: %s", rownum, row.model_dump())
+        try:
+            name = (row.name or "").strip()
+            parent_email = (row.parent_email or "").strip()
+            parent_phone = (row.parent_phone or "").strip()
+            route_val = (row.route or "").strip()
+            if not name:
+                raise ValueError("Name is required.")
+            if not parent_email:
+                raise ValueError("Parent email is required.")
+            if not parent_phone:
+                raise ValueError("Parent phone is required.")
+            if not route_val:
+                raise ValueError("Route is required.")
+            route_id = _resolve_route(org_id, route_val)
+            if not route_id:
+                raise ValueError(f"Unknown route '{route_val}'.")
+            extra = {
+                "parent_phone": parent_phone,
+                "parent_email": parent_email,
+                "student_phone": (row.student_phone or "").strip() or None,
+                "grade": (row.grade or "").strip() or None,
+                "class_name": (row.class_name or "").strip() or None,
+            }
+            # Parent → student: siblings/duplicate parent emails REUSE the same
+            # parent account (no duplicate login). Same path as single create.
+            _create_student_by_parent_email(org_id, name, parent_email, route_id, extra)
+            created += 1
+        except HTTPException as exc:
+            log.warning("bulk-students row %s FAILED: %s", rownum, exc.detail)
+            errors.append({"row": rownum, "label": label, "error": str(exc.detail)})
+        except Exception as exc:
+            # Full traceback + message so the REAL cause (e.g. a missing column from
+            # an un-run migration) is visible in the server logs and the response.
+            log.exception("bulk-students row %s ERROR", rownum)
+            errors.append({"row": rownum, "label": label, "error": str(exc)})
     return {"created": created, "failed": len(errors), "errors": errors}

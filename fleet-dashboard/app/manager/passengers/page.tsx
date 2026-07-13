@@ -7,6 +7,7 @@ import {
   updatePassenger,
   deletePassenger,
   bulkCreatePassengers,
+  bulkCreateStudents,
   listRoutes,
   type ManagerPassenger,
   type ManagerRoute,
@@ -17,10 +18,26 @@ import { useT } from "@/lib/i18n";
 import { useIsSchool } from "@/lib/module";
 import { useToast } from "@/lib/toast";
 import Button from "@/components/Button";
+import BulkImport from "@/components/BulkImport";
 import Input from "@/components/Input";
 import Modal from "@/components/Modal";
 import StatusBadge from "@/components/StatusBadge";
 import { EditIcon, TrashIcon } from "@/components/RowIcons";
+
+// FRESH student bulk import with the CURRENT fields (parent email = login).
+const STUDENT_COLUMNS = [
+  { key: "name", header: "name", aliases: ["student name", "student_name"] },
+  { key: "parent_phone", header: "parent_phone", aliases: ["parent phone"] },
+  { key: "parent_email", header: "parent_email", aliases: ["parent email", "email"] },
+  { key: "student_phone", header: "student_phone", aliases: ["student phone"] },
+  { key: "grade", header: "grade", aliases: ["year", "school year"] },
+  { key: "class_name", header: "class_name", aliases: ["class", "section"] },
+  { key: "route", header: "route", aliases: ["route_id", "route name", "route_name"] },
+];
+const STUDENT_SAMPLE = [
+  { name: "Nour Hassan", parent_phone: "0100-123-4567", parent_email: "nour.parent@example.com", student_phone: "", grade: "Grade 5", class_name: "5-B", route: "Maadi Morning" },
+  { name: "Youssef Amir", parent_phone: "0111-222-3333", parent_email: "youssef.parent@example.com", student_phone: "0120-999-8888", grade: "Grade 3", class_name: "3-A", route: "Maadi Morning" },
+];
 
 function fill(s: string, v: Record<string, string | number>): string {
   return Object.entries(v).reduce((a, [k, val]) => a.split(`{${k}}`).join(String(val)), s);
@@ -208,7 +225,7 @@ export default function ManagerPassengersPage() {
         } else {
           const res = await bulkCreatePassengers(rows);
           toast.success(fill(t("pax.bulkResult"), { created: res.created, failed: res.failed }));
-          res.errors.slice(0, 6).forEach((er) => toast.error(fill(t("pax.rowError"), { row: er.row, email: er.email, error: er.error })));
+          res.errors.slice(0, 6).forEach((er) => toast.error(fill(t("pax.rowError"), { row: er.row, email: er.label ?? "", error: er.error })));
           await load();
         }
       } catch (err) {
@@ -226,9 +243,16 @@ export default function ManagerPassengersPage() {
           <p className="text-sm text-slate-400">{loading ? t("common.loading") : `${passengers.length} · ${isSchool ? t("students.subtitle") : t("pax.subtitle")}`}</p>
         </div>
         <div className="flex items-center gap-2">
-          <button onClick={downloadTemplate} className="rounded-lg border border-ink-700 px-3 py-2 text-sm text-slate-300 hover:border-brand hover:text-white">{t("pax.downloadTemplate")}</button>
-          <button onClick={() => fileRef.current?.click()} className="rounded-lg border border-ink-700 px-3 py-2 text-sm text-slate-300 hover:border-brand hover:text-white">{t("pax.upload")}</button>
-          <input ref={fileRef} type="file" accept=".csv,text/csv" onChange={handleUpload} className="hidden" />
+          {isSchool ? (
+            // Fresh student bulk import (current fields; parent email = login).
+            <BulkImport templateName="students_template.csv" columns={STUDENT_COLUMNS} sample={STUDENT_SAMPLE} onImport={bulkCreateStudents} onDone={load} />
+          ) : (
+            <>
+              <button onClick={downloadTemplate} className="rounded-lg border border-ink-700 px-3 py-2 text-sm text-slate-300 hover:border-brand hover:text-white">{t("pax.downloadTemplate")}</button>
+              <button onClick={() => fileRef.current?.click()} className="rounded-lg border border-ink-700 px-3 py-2 text-sm text-slate-300 hover:border-brand hover:text-white">{t("pax.upload")}</button>
+              <input ref={fileRef} type="file" accept=".csv,text/csv" onChange={handleUpload} className="hidden" />
+            </>
+          )}
           <button onClick={openCreate} className="rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-brand-sage">+ {isSchool ? t("students.new") : t("pax.newPassenger")}</button>
         </div>
       </div>
@@ -274,13 +298,21 @@ export default function ManagerPassengersPage() {
       <Modal open={open} onClose={() => setOpen(false)} title={isSchool ? t("students.new") : t("pax.newPassenger")}>
         {created ? (
           <div className="space-y-4">
-            <div className="rounded-lg border border-brand/30 bg-brand/10 px-4 py-3 text-sm text-brand-sage">
-              <div className="font-semibold text-white">{t("pax.loginTitle")}</div>
-              <p className="mt-1 text-xs text-slate-300">{t("pax.loginNote")}</p>
-              <div className="mt-2 select-all font-mono text-base text-white">{created.email}</div>
-              <div className="mt-1 text-sm">{t("pax.tempPassword")}: <span className="select-all font-mono text-white">{created.default_password}</span></div>
-              <div className="mt-1 text-xs text-amber-300">⚠ {t("pax.mustChange")}</div>
-            </div>
+            {created.parent_created === false ? (
+              // School: an existing parent was reused (sibling) — no new login.
+              <div className="rounded-lg border border-brand/30 bg-brand/10 px-4 py-3 text-sm text-brand-sage">
+                <div className="font-semibold text-white">{t("students.linkedExisting")}</div>
+                <div className="mt-2 select-all font-mono text-base text-white">{created.email}</div>
+              </div>
+            ) : (
+              <div className="rounded-lg border border-brand/30 bg-brand/10 px-4 py-3 text-sm text-brand-sage">
+                <div className="font-semibold text-white">{t("pax.loginTitle")}</div>
+                <p className="mt-1 text-xs text-slate-300">{t("pax.loginNote")}</p>
+                <div className="mt-2 select-all font-mono text-base text-white">{created.email}</div>
+                <div className="mt-1 text-sm">{t("pax.tempPassword")}: <span className="select-all font-mono text-white">{created.default_password}</span></div>
+                <div className="mt-1 text-xs text-amber-300">⚠ {t("pax.mustChange")}</div>
+              </div>
+            )}
             <div className="flex justify-end gap-2">
               <button onClick={openCreate} className="rounded-lg border border-ink-700 px-4 py-2 text-sm text-slate-300 hover:border-brand hover:text-white">+ {t("pax.newPassenger")}</button>
               <Button type="button" onClick={() => setOpen(false)} className="w-auto px-4">{t("common.done")}</Button>

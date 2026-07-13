@@ -73,7 +73,7 @@ def _fetch_rows(
         pax = {
             p["id"]: p
             for p in supabase.table("passengers")
-            .select("id, route_id, grade, class_name, parent_phone, student_phone")
+            .select("id, name, route_id, grade, class_name, parent_phone, student_phone")
             .in_("id", sids)
             .execute()
             .data
@@ -82,9 +82,6 @@ def _fetch_rows(
         att = [a for a in att if (pax.get(a["student_id"]) or {}).get("route_id") == route_id]
         sids = list({a["student_id"] for a in att})
 
-    names = {}
-    if sids:
-        names = {p["id"]: p["name"] for p in supabase.table("profiles").select("id, name").in_("id", sids).execute().data}
     route_ids = list({(pax.get(s) or {}).get("route_id") for s in sids if (pax.get(s) or {}).get("route_id")})
     routes = {}
     if route_ids:
@@ -95,7 +92,7 @@ def _fetch_rows(
         p = pax.get(a["student_id"]) or {}
         rows.append(
             {
-                "student_name": names.get(a["student_id"]),
+                "student_name": p.get("name"),
                 "class_name": p.get("class_name"),
                 "grade": p.get("grade"),
                 "route_name": routes.get(p.get("route_id")),

@@ -9,7 +9,9 @@ from routers import (
     attendance,
     auth,
     bus_drivers,
+    capacity,
     centers,
+    change_requests,
     dashboard,
     driver_groups,
     drivers,
@@ -22,6 +24,7 @@ from routers import (
     report_schedules,
     reports,
     routes,
+    school,
     tracking,
     trips,
     users,
@@ -68,6 +71,9 @@ app.include_router(history.router)
 app.include_router(passengers.router)
 app.include_router(passenger.router)
 app.include_router(attendance.router)
+app.include_router(capacity.router)
+app.include_router(change_requests.router)
+app.include_router(school.router)
 
 
 @app.get("/")
