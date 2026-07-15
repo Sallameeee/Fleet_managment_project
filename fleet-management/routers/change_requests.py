@@ -16,18 +16,17 @@ from pydantic import BaseModel, Field
 
 from auth import require_permission, require_role
 from capacity_logic import (
+    LOCAL_TZ,
     approved_change_maps,
     base_assigned_map,
     occupancy,
+    read_cutoff,
     require_school_org,
     route_vehicle_map,
 )
 from database import supabase
 
 router = APIRouter(prefix="/change-requests", tags=["change-requests"])
-
-LOCAL_TZ = timezone(timedelta(hours=2))  # Egypt (UTC+2) — same as the rest of the app
-DEFAULT_CUTOFF = time(20, 0)  # 8 PM the day before, if the org has none set
 
 
 # ── Parent: create a request for ONE child ───────────────────────────────────
@@ -39,25 +38,18 @@ class ChangeRequestIn(BaseModel):
 
 
 def _enforce_cutoff(org_id: str, request_date: date) -> None:
-    """Requests for day D must be submitted before the org's cutoff time on D-1.
-    Cutoff is per-org (organizations.change_cutoff_time), default 8 PM."""
-    cutoff = DEFAULT_CUTOFF
-    try:
-        org = supabase.table("organizations").select("change_cutoff_time").eq("id", org_id).limit(1).execute().data
-        raw = (org[0].get("change_cutoff_time") if org else None) or ""
-        parts = str(raw).split(":")
-        if len(parts) >= 2:
-            cutoff = time(int(parts[0]), int(parts[1]))
-    except Exception:
-        pass
-
-    deadline = datetime.combine(request_date - timedelta(days=1), cutoff, tzinfo=LOCAL_TZ)
+    """SAME-DAY cutoff: a request for day D must be submitted before the org's
+    cutoff time ON day D (default 8 PM). So today is requestable until the cutoff,
+    and any future day is fine; a past day (or today after cutoff) is blocked.
+    Cutoff is per-org (organizations.change_cutoff_time)."""
+    cutoff = read_cutoff(org_id)
+    deadline = datetime.combine(request_date, cutoff, tzinfo=LOCAL_TZ)
     if datetime.now(LOCAL_TZ) >= deadline:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
                 f"The cutoff has passed. Requests for {request_date.isoformat()} must be made "
-                f"before {cutoff.strftime('%H:%M')} on {(request_date - timedelta(days=1)).isoformat()}."
+                f"before {cutoff.strftime('%H:%M')} that day. Please pick a later date."
             ),
         )
 

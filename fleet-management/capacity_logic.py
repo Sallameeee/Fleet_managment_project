@@ -13,12 +13,40 @@ For one-day change requests, per-date OCCUPANCY also folds in APPROVED changes:
                           - approved requests OFF this route that day
 """
 
-from datetime import date
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Optional
 
 from fastapi import HTTPException, status
 
 from database import supabase
+
+LOCAL_TZ = timezone(timedelta(hours=2))  # Egypt (UTC+2) — same as the rest of the app
+DEFAULT_CUTOFF = time(20, 0)  # 8 PM, if the org has none set
+
+
+def read_cutoff(org_id: str) -> time:
+    """The org's change-request cutoff time (organizations.change_cutoff_time),
+    default 8 PM. Shared by change-request enforcement and the parent-facing
+    options so the app and the server agree on what's selectable."""
+    cutoff = DEFAULT_CUTOFF
+    try:
+        org = supabase.table("organizations").select("change_cutoff_time").eq("id", org_id).limit(1).execute().data
+        raw = (org[0].get("change_cutoff_time") if org else None) or ""
+        parts = str(raw).split(":")
+        if len(parts) >= 2:
+            cutoff = time(int(parts[0]), int(parts[1]))
+    except Exception:
+        pass
+    return cutoff
+
+
+def earliest_request_date(org_id: str) -> date:
+    """Earliest date a parent may still request, under the SAME-DAY cutoff rule:
+    today is allowed only until the cutoff time; once it passes, the earliest
+    selectable day is tomorrow. Every later day is always allowed."""
+    cutoff = read_cutoff(org_id)
+    now = datetime.now(LOCAL_TZ)
+    return now.date() if now.time() < cutoff else now.date() + timedelta(days=1)
 
 
 def org_module(org_id: str) -> str:

@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from auth import require_role
-from capacity_logic import require_school_org
+from capacity_logic import earliest_request_date, read_cutoff, require_school_org
 from database import supabase
 from live_logic import LOCAL_TZ, driver_live_positions, pick_current_assignment
 
@@ -59,6 +59,106 @@ def my_children(current_user: dict = Depends(require_role("passenger"))):
     ]
     out.sort(key=lambda x: (x["name"] or "").lower())
     return {"count": len(out), "children": out}
+
+
+@router.get("/change-options")
+def change_options(current_user: dict = Depends(require_role("passenger"))):
+    """Everything the parent's "request a bus change" form needs, in one call:
+      * the org's routes, each with its ordered stops (for the searchable route
+        dropdown + the stop dropdown filtered to that route),
+      * the cutoff time, and
+      * earliest_date — the first date still selectable under the SAME-DAY cutoff
+        (today until the cutoff passes, else tomorrow). The picker uses this as its
+        minimum so a date the server would reject is never offered.
+    School orgs only."""
+    org_id = current_user["org_id"]
+    require_school_org(org_id)
+
+    routes = (
+        supabase.table("routes")
+        .select("id, name, color, is_active")
+        .eq("org_id", org_id)
+        .execute()
+        .data
+    )
+    routes = [r for r in routes if r.get("is_active", True)]
+    route_ids = [r["id"] for r in routes]
+    stops_by_route: dict = {}
+    if route_ids:
+        srows = (
+            supabase.table("route_stops")
+            .select("id, route_id, name, lat, lng, stop_order")
+            .in_("route_id", route_ids)
+            .order("stop_order", desc=False)
+            .execute()
+            .data
+        )
+        for s in srows:
+            stops_by_route.setdefault(s["route_id"], []).append(
+                {"id": s["id"], "name": s.get("name"), "lat": s.get("lat"), "lng": s.get("lng"), "stop_order": s.get("stop_order")}
+            )
+
+    out_routes = [
+        {"id": r["id"], "name": r.get("name"), "color": r.get("color"), "stops": stops_by_route.get(r["id"], [])}
+        for r in routes
+    ]
+    out_routes.sort(key=lambda x: (x["name"] or "").lower())
+
+    cutoff = read_cutoff(org_id)
+    return {
+        "today": datetime.now(LOCAL_TZ).date().isoformat(),
+        "cutoff_time": cutoff.strftime("%H:%M"),
+        "earliest_date": earliest_request_date(org_id).isoformat(),
+        "routes": out_routes,
+    }
+
+
+@router.get("/change-requests")
+def my_change_requests(current_user: dict = Depends(require_role("passenger"))):
+    """The signed-in PARENT's own change requests (all statuses), newest first —
+    so the parent can see pending / approved / rejected. School orgs only."""
+    org_id = current_user["org_id"]
+    parent_id = current_user["id"]
+    require_school_org(org_id)
+
+    reqs = (
+        supabase.table("change_requests")
+        .select("id, student_id, current_route_id, requested_route_id, requested_stop, request_date, status, created_at, decided_at")
+        .eq("org_id", org_id)
+        .eq("parent_id", parent_id)
+        .order("created_at", desc=True)
+        .execute()
+        .data
+    )
+    student_ids = list({r["student_id"] for r in reqs if r.get("student_id")})
+    route_ids = set()
+    for r in reqs:
+        for k in ("current_route_id", "requested_route_id"):
+            if r.get(k):
+                route_ids.add(r[k])
+    students = {}
+    if student_ids:
+        students = {p["id"]: p.get("name") for p in supabase.table("passengers").select("id, name").in_("id", student_ids).execute().data}
+    rnames = {}
+    if route_ids:
+        rnames = {x["id"]: x["name"] for x in supabase.table("routes").select("id, name").in_("id", list(route_ids)).execute().data}
+
+    out = [
+        {
+            "id": r["id"],
+            "status": r["status"],
+            "request_date": r["request_date"],
+            "student_id": r.get("student_id"),
+            "student_name": students.get(r.get("student_id")),
+            "current_route_name": rnames.get(r.get("current_route_id")),
+            "requested_route_name": rnames.get(r.get("requested_route_id")),
+            "requested_stop": r.get("requested_stop"),
+            "created_at": r.get("created_at"),
+            "decided_at": r.get("decided_at"),
+        }
+        for r in reqs
+    ]
+    return {"count": len(out), "change_requests": out}
 
 
 @router.get("/children/{student_id}/track")
