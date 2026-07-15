@@ -41,6 +41,7 @@ class PassengerCreate(BaseModel):
     student_phone: Optional[str] = None
     grade: Optional[str] = None
     class_name: Optional[str] = None
+    drop_off_stop: Optional[str] = None  # stop NAME on the assigned route
 
 
 class PassengerUpdate(BaseModel):
@@ -53,10 +54,11 @@ class PassengerUpdate(BaseModel):
     student_phone: Optional[str] = None
     grade: Optional[str] = None
     class_name: Optional[str] = None
+    drop_off_stop: Optional[str] = None
 
 
 # The school-only student detail columns on the `passengers` table.
-_STUDENT_FIELDS = ("parent_phone", "parent_email", "student_phone", "grade", "class_name")
+_STUDENT_FIELDS = ("parent_phone", "parent_email", "student_phone", "grade", "class_name", "drop_off_stop")
 
 
 class BulkRow(BaseModel):
@@ -90,6 +92,30 @@ def _resolve_route(org_id: str, value: str) -> Optional[str]:
     # "Maadi Morning".
     by_name = supabase.table("routes").select("id").ilike("name", value).eq("org_id", org_id).limit(1).execute()
     return by_name.data[0]["id"] if by_name.data else None
+
+
+def _resolve_stop(route_id: str, value: Optional[str]) -> Optional[str]:
+    """Validate a drop-off stop NAME against the stops of `route_id`, returning the
+    stop's canonical (DB-cased) name. Empty/None → None (no drop-off stop set).
+    Raises 400 if the name isn't one of the route's stops. Matched case-insensitively
+    so "main gate" resolves to "Main Gate"."""
+    if not value or not value.strip():
+        return None
+    name = value.strip()
+    match = (
+        supabase.table("route_stops")
+        .select("name")
+        .eq("route_id", route_id)
+        .ilike("name", name)
+        .limit(1)
+        .execute()
+    )
+    if not match.data:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"'{name}' is not a stop on the selected route.",
+        )
+    return match.data[0]["name"]  # canonical casing from the route
 
 
 def _create_passenger(
@@ -228,6 +254,8 @@ def create_passenger(
     if not route_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such route in your organization.")
     extra = {f: getattr(body, f) for f in _STUDENT_FIELDS}
+    # Drop-off stop must be one of the route's stops; store the canonical name.
+    extra["drop_off_stop"] = _resolve_stop(route_id, body.drop_off_stop)
 
     # School student: parent_email present → parent→student model (reuse siblings).
     if body.parent_email and body.parent_email.strip():
@@ -255,7 +283,7 @@ def list_passengers(current_user: dict = Depends(require_permission("manage_pass
     org_id = current_user["org_id"]
     rows = (
         supabase.table("passengers")
-        .select("id, name, university_id, route_id, parent_phone, parent_email, student_phone, grade, class_name, created_at")
+        .select("id, name, university_id, route_id, parent_phone, parent_email, student_phone, grade, class_name, drop_off_stop, created_at")
         .eq("org_id", org_id)
         .execute()
         .data
@@ -289,6 +317,7 @@ def list_passengers(current_user: dict = Depends(require_permission("manage_pass
                 "student_phone": r.get("student_phone"),
                 "grade": r.get("grade"),
                 "class_name": r.get("class_name"),
+                "drop_off_stop": r.get("drop_off_stop"),
             }
         )
     out.sort(key=lambda x: (x["name"] or "").lower())
@@ -302,7 +331,7 @@ def update_passenger(
     current_user: dict = Depends(require_permission("manage_passengers")),
 ):
     org_id = current_user["org_id"]
-    existing = supabase.table("passengers").select("id").eq("id", passenger_id).eq("org_id", org_id).limit(1).execute()
+    existing = supabase.table("passengers").select("id, route_id, drop_off_stop").eq("id", passenger_id).eq("org_id", org_id).limit(1).execute()
     if not existing.data:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Passenger not found.")
 
@@ -320,14 +349,29 @@ def update_passenger(
         pax_update["name"] = body.name  # student name now lives on the student row
     if "university_id" in body.model_fields_set:
         pax_update["university_id"] = body.university_id
+    # Student fields EXCEPT drop_off_stop (validated separately against the route).
     for f in _STUDENT_FIELDS:
-        if f in body.model_fields_set:
+        if f != "drop_off_stop" and f in body.model_fields_set:
             pax_update[f] = getattr(body, f)
+
+    route_changed = False
     if body.route_id is not None:
         rid = _resolve_route(org_id, body.route_id)
         if not rid:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such route in your organization.")
         pax_update["route_id"] = rid
+        route_changed = rid != existing.data[0].get("route_id")
+
+    # Drop-off stop is validated against the EFFECTIVE route (the new one if the
+    # route is changing, else the existing one).
+    effective_route = pax_update.get("route_id") or existing.data[0].get("route_id")
+    if "drop_off_stop" in body.model_fields_set:
+        pax_update["drop_off_stop"] = _resolve_stop(effective_route, body.drop_off_stop) if effective_route else None
+    elif route_changed and existing.data[0].get("drop_off_stop"):
+        # Route changed but no new stop given → the old stop won't exist on the new
+        # route; clear it rather than leave a stale, off-route drop-off.
+        pax_update["drop_off_stop"] = None
+
     if pax_update:
         supabase.table("passengers").update(pax_update).eq("id", passenger_id).eq("org_id", org_id).execute()
 
@@ -383,6 +427,7 @@ class BulkStudentRow(BaseModel):
     grade: Optional[str] = None
     class_name: Optional[str] = None
     route: Optional[str] = None  # route id OR name
+    drop_off_stop: Optional[str] = None  # stop NAME on that route
 
 
 class BulkStudentRequest(BaseModel):
@@ -424,12 +469,15 @@ def bulk_create_students(
             route_id = _resolve_route(org_id, route_val)
             if not route_id:
                 raise ValueError(f"Unknown route '{route_val}'.")
+            # Optional drop-off stop, validated (by name) against the route's stops.
+            drop_off_stop = _resolve_stop(route_id, (row.drop_off_stop or "").strip() or None)
             extra = {
                 "parent_phone": parent_phone,
                 "parent_email": parent_email,
                 "student_phone": (row.student_phone or "").strip() or None,
                 "grade": (row.grade or "").strip() or None,
                 "class_name": (row.class_name or "").strip() or None,
+                "drop_off_stop": drop_off_stop,
             }
             # Parent → student: siblings/duplicate parent emails REUSE the same
             # parent account (no duplicate login). Same path as single create.

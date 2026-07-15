@@ -886,6 +886,7 @@ export interface ManagerPassenger {
   student_phone?: string | null;
   grade?: string | null;
   class_name?: string | null;
+  drop_off_stop?: string | null; // stop name on the assigned route
 }
 
 export interface CreatePassengerInput {
@@ -899,6 +900,7 @@ export interface CreatePassengerInput {
   student_phone?: string;
   grade?: string;
   class_name?: string;
+  drop_off_stop?: string;
 }
 
 export interface PassengerCreateResult {
@@ -930,6 +932,7 @@ export interface UpdatePassengerInput {
   student_phone?: string | null;
   grade?: string | null;
   class_name?: string | null;
+  drop_off_stop?: string | null;
 }
 
 export async function updatePassenger(id: string, input: UpdatePassengerInput): Promise<void> {

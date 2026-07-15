@@ -33,10 +33,11 @@ const STUDENT_COLUMNS = [
   { key: "grade", header: "grade", aliases: ["year", "school year"] },
   { key: "class_name", header: "class_name", aliases: ["class", "section"] },
   { key: "route", header: "route", aliases: ["route_id", "route name", "route_name"] },
+  { key: "drop_off_stop", header: "drop_off_stop", aliases: ["drop off", "dropoff", "drop-off stop", "drop off stop", "stop"] },
 ];
 const STUDENT_SAMPLE = [
-  { name: "Nour Hassan", parent_phone: "0100-123-4567", parent_email: "nour.parent@example.com", student_phone: "", grade: "Grade 5", class_name: "5-B", route: "Maadi Morning" },
-  { name: "Youssef Amir", parent_phone: "0111-222-3333", parent_email: "youssef.parent@example.com", student_phone: "0120-999-8888", grade: "Grade 3", class_name: "3-A", route: "Maadi Morning" },
+  { name: "Nour Hassan", parent_phone: "0100-123-4567", parent_email: "nour.parent@example.com", student_phone: "", grade: "Grade 5", class_name: "5-B", route: "Maadi Morning", drop_off_stop: "Road 9" },
+  { name: "Youssef Amir", parent_phone: "0111-222-3333", parent_email: "youssef.parent@example.com", student_phone: "0120-999-8888", grade: "Grade 3", class_name: "3-A", route: "Maadi Morning", drop_off_stop: "Victoria Square" },
 ];
 
 function fill(s: string, v: Record<string, string | number>): string {
@@ -68,7 +69,7 @@ function parseCsv(text: string): BulkPassengerRow[] {
   return rows;
 }
 
-const STUDENT_EMPTY = { name: "", email: "", university_id: "", route_id: "", parent_email: "", parent_phone: "", student_phone: "", grade: "", class_name: "" };
+const STUDENT_EMPTY = { name: "", email: "", university_id: "", route_id: "", parent_email: "", parent_phone: "", student_phone: "", grade: "", class_name: "", drop_off_stop: "" };
 
 export default function ManagerPassengersPage() {
   const { t } = useT();
@@ -87,7 +88,7 @@ export default function ManagerPassengersPage() {
   const [created, setCreated] = useState<PassengerCreateResult | null>(null);
 
   const [editP, setEditP] = useState<ManagerPassenger | null>(null);
-  const [eForm, setEForm] = useState({ name: "", university_id: "", route_id: "", is_active: true, parent_email: "", parent_phone: "", student_phone: "", grade: "", class_name: "" });
+  const [eForm, setEForm] = useState({ name: "", university_id: "", route_id: "", is_active: true, parent_email: "", parent_phone: "", student_phone: "", grade: "", class_name: "", drop_off_stop: "" });
   const [saving, setSaving] = useState(false);
   const [eError, setEError] = useState<string | null>(null);
 
@@ -134,6 +135,7 @@ export default function ManagerPassengersPage() {
             student_phone: form.student_phone.trim() || undefined,
             grade: form.grade.trim() || undefined,
             class_name: form.class_name.trim() || undefined,
+            drop_off_stop: form.drop_off_stop.trim() || undefined,
           }
         : { name: form.name.trim(), email: form.email.trim(), university_id: form.university_id.trim() || undefined, route_id: form.route_id };
       const res = await createPassenger(payload);
@@ -159,6 +161,7 @@ export default function ManagerPassengersPage() {
       student_phone: p.student_phone ?? "",
       grade: p.grade ?? "",
       class_name: p.class_name ?? "",
+      drop_off_stop: p.drop_off_stop ?? "",
     });
     setEError(null);
   }
@@ -179,6 +182,7 @@ export default function ManagerPassengersPage() {
             student_phone: eForm.student_phone.trim() || null,
             grade: eForm.grade.trim() || null,
             class_name: eForm.class_name.trim() || null,
+            drop_off_stop: eForm.drop_off_stop.trim() || null,
           }
         : { name: eForm.name.trim(), university_id: eForm.university_id.trim() || null, route_id: eForm.route_id, is_active: eForm.is_active };
       await updatePassenger(editP.id, patch);
@@ -341,8 +345,15 @@ export default function ManagerPassengersPage() {
             )}
             <label className="block">
               <span className="mb-1.5 block text-sm font-medium text-slate-300">{t("pax.route")} *</span>
-              <RouteAutocomplete routes={routes} value={form.route_id} onChange={(id) => setForm((f) => ({ ...f, route_id: id }))} />
+              {/* Changing the route clears the drop-off stop (it belongs to a route). */}
+              <RouteAutocomplete routes={routes} value={form.route_id} onChange={(id) => setForm((f) => ({ ...f, route_id: id, drop_off_stop: "" }))} />
             </label>
+            {isSchool && (
+              <label className="block">
+                <span className="mb-1.5 block text-sm font-medium text-slate-300">{t("students.dropOffStop")}</span>
+                <StopSelect routes={routes} routeId={form.route_id} value={form.drop_off_stop} onChange={(v) => setForm((f) => ({ ...f, drop_off_stop: v }))} />
+              </label>
+            )}
             {createError && <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-300">{createError}</div>}
             <div className="flex justify-end gap-2 pt-1">
               <button type="button" onClick={() => setOpen(false)} className="rounded-lg border border-ink-700 px-4 py-2 text-sm text-slate-300 hover:border-brand hover:text-white">{t("common.cancel")}</button>
@@ -374,8 +385,14 @@ export default function ManagerPassengersPage() {
             )}
             <label className="block">
               <span className="mb-1.5 block text-sm font-medium text-slate-300">{t("pax.route")}</span>
-              <RouteAutocomplete routes={routes} value={eForm.route_id} onChange={(id) => setEForm((f) => ({ ...f, route_id: id }))} />
+              <RouteAutocomplete routes={routes} value={eForm.route_id} onChange={(id) => setEForm((f) => ({ ...f, route_id: id, drop_off_stop: "" }))} />
             </label>
+            {isSchool && (
+              <label className="block">
+                <span className="mb-1.5 block text-sm font-medium text-slate-300">{t("students.dropOffStop")}</span>
+                <StopSelect routes={routes} routeId={eForm.route_id} value={eForm.drop_off_stop} onChange={(v) => setEForm((f) => ({ ...f, drop_off_stop: v }))} />
+              </label>
+            )}
             <label className="flex items-center gap-2 text-sm text-slate-300">
               <input type="checkbox" checked={eForm.is_active} onChange={(e) => setEForm((f) => ({ ...f, is_active: e.target.checked }))} className="h-4 w-4 accent-[#3AA76D]" />
               {t("common.active")}
@@ -389,6 +406,33 @@ export default function ManagerPassengersPage() {
         )}
       </Modal>
     </div>
+  );
+}
+
+// Drop-off stop picker: a plain dropdown of the SELECTED route's stops (by name).
+// Disabled until a route is chosen; the stop belongs to that route. If an existing
+// value isn't among the route's current stops (e.g. the route was edited), it's
+// still shown as an option so the manager can see/keep or replace it.
+function StopSelect({ routes, routeId, value, onChange }: { routes: ManagerRoute[]; routeId: string; value: string; onChange: (v: string) => void }) {
+  const { t } = useT();
+  const route = routes.find((r) => r.id === routeId);
+  const stops = [...(route?.stops ?? [])].sort((a, b) => a.stop_order - b.stop_order);
+  const names = stops.map((s) => s.name);
+  const orphan = value && !names.some((n) => n.toLowerCase() === value.toLowerCase());
+  const disabled = !routeId || stops.length === 0;
+  return (
+    <select
+      value={value}
+      disabled={disabled}
+      onChange={(e) => onChange(e.target.value)}
+      className="w-full rounded-lg border border-ink-700 bg-ink-850 px-3 py-2.5 text-slate-100 focus:border-brand focus:outline-none disabled:opacity-50"
+    >
+      <option value="">{!routeId ? t("students.dropOffStopHint") : t("students.dropOffNone")}</option>
+      {orphan && <option value={value}>{value}</option>}
+      {names.map((n) => (
+        <option key={n} value={n}>{n}</option>
+      ))}
+    </select>
   );
 }
 

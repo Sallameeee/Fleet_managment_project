@@ -34,7 +34,7 @@ def my_children(current_user: dict = Depends(require_role("passenger"))):
 
     children = (
         supabase.table("passengers")
-        .select("id, name, grade, class_name, route_id")
+        .select("id, name, grade, class_name, route_id, drop_off_stop")
         .eq("org_id", org_id)
         .eq("parent_id", parent_id)
         .execute()
@@ -53,6 +53,7 @@ def my_children(current_user: dict = Depends(require_role("passenger"))):
             "class_name": c.get("class_name"),
             "route_id": c.get("route_id"),
             "route_name": routes.get(c.get("route_id")),
+            "drop_off_stop": c.get("drop_off_stop"),  # the child's normal drop-off stop (name)
         }
         for c in children
     ]
@@ -73,7 +74,7 @@ def track_child(student_id: str, current_user: dict = Depends(require_role("pass
 
     st = (
         supabase.table("passengers")
-        .select("id, name, grade, class_name, route_id")
+        .select("id, name, grade, class_name, route_id, drop_off_stop")
         .eq("id", student_id)
         .eq("org_id", org_id)
         .eq("parent_id", parent_id)  # OWN child only
@@ -101,12 +102,15 @@ def track_child(student_id: str, current_user: dict = Depends(require_role("pass
     )
     changed_today = bool(cr)
     effective_route_id = cr[0]["requested_route_id"] if changed_today else child.get("route_id")
-    effective_stop = cr[0].get("requested_stop") if changed_today else None
+    # The stop where the child gets off TODAY: the change request's requested_stop
+    # when changed, otherwise the student's normal drop-off stop. Both are names.
+    effective_stop = (cr[0].get("requested_stop") if changed_today else child.get("drop_off_stop")) or None
 
     result = {
         "child": {"id": child["id"], "name": child.get("name"), "grade": child.get("grade"), "class_name": child.get("class_name")},
         "changed_today": changed_today,
-        "effective_stop": effective_stop,
+        "effective_stop": effective_stop,       # the drop-off stop NAME (normal or changed)
+        "drop_off_stop": None,                   # resolved {name, lat, lng, stop_order} for the map — filled below
         "route": None,
         "bus": None,
         "supervisor": None,
@@ -135,6 +139,22 @@ def track_child(student_id: str, current_user: dict = Depends(require_role("pass
         "geometry": route.get("geometry"),
         "stops": stops,
     }
+
+    # Resolve the effective drop-off stop NAME to its coordinates on this route so
+    # the parent map can measure distance/ETA from the live bus to THAT stop. Match
+    # case-insensitively; if the stop can't be found on the route, leave coords null
+    # (the name still shows).
+    if effective_stop:
+        target = next((s for s in stops if (s.get("name") or "").strip().lower() == effective_stop.strip().lower()), None)
+        if target:
+            result["drop_off_stop"] = {
+                "name": target.get("name"),
+                "lat": target.get("lat"),
+                "lng": target.get("lng"),
+                "stop_order": target.get("stop_order"),
+            }
+        else:
+            result["drop_off_stop"] = {"name": effective_stop, "lat": None, "lng": None, "stop_order": None}
 
     # Today's assignment for the effective route → supervisor (app user), bus,
     # bus driver. Pick the current one by time if there are several shifts.
