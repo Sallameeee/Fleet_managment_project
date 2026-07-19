@@ -1,9 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { getSchoolDirectory, type DirectoryPerson } from "@/lib/manager";
+import { getSchoolDirectory, getDriverLogs, type DirectoryPerson, type LogEvent } from "@/lib/manager";
 import { useT } from "@/lib/i18n";
 import { useIsSchool } from "@/lib/module";
+import EventList from "@/components/EventList";
 
 export default function ManagerDirectoryPage() {
   const { t } = useT();
@@ -57,14 +58,15 @@ export default function ManagerDirectoryPage() {
         </div>
       )}
 
-      <Section title={t("dir.supervisors")} people={supervisors} loading={loading} />
+      {/* Supervisors are the app drivers that generate events → show per-driver logs. */}
+      <Section title={t("dir.supervisors")} people={supervisors} loading={loading} withEvents />
       <div className="h-8" />
       <Section title={t("dir.busDrivers")} people={busDrivers} loading={loading} />
     </div>
   );
 }
 
-function Section({ title, people, loading }: { title: string; people: DirectoryPerson[]; loading: boolean }) {
+function Section({ title, people, loading, withEvents = false }: { title: string; people: DirectoryPerson[]; loading: boolean; withEvents?: boolean }) {
   const { t } = useT();
   return (
     <div>
@@ -76,7 +78,7 @@ function Section({ title, people, loading }: { title: string; people: DirectoryP
       ) : (
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
           {people.map((p) => (
-            <PersonCard key={p.id} p={p} />
+            <PersonCard key={p.id} p={p} withEvents={withEvents} />
           ))}
         </div>
       )}
@@ -84,10 +86,31 @@ function Section({ title, people, loading }: { title: string; people: DirectoryP
   );
 }
 
-function PersonCard({ p }: { p: DirectoryPerson }) {
+function PersonCard({ p, withEvents = false }: { p: DirectoryPerson; withEvents?: boolean }) {
   const { t } = useT();
   const initials = (p.name ?? "?").trim().charAt(0).toUpperCase() || "?";
   const route = p.route_name ?? t("dir.noRoute");
+
+  // Per-driver events (lazy-loaded on first expand).
+  const [open, setOpen] = useState(false);
+  const [events, setEvents] = useState<LogEvent[] | null>(null);
+  const [loadingEvents, setLoadingEvents] = useState(false);
+
+  async function toggleEvents() {
+    const next = !open;
+    setOpen(next);
+    if (next && events === null) {
+      setLoadingEvents(true);
+      try {
+        setEvents(await getDriverLogs(p.id));
+      } catch {
+        setEvents([]);
+      } finally {
+        setLoadingEvents(false);
+      }
+    }
+  }
+
   return (
     <div className="rounded-xl border border-ink-800 bg-ink-900/50 p-4">
       <div className="flex items-center gap-3">
@@ -113,6 +136,27 @@ function PersonCard({ p }: { p: DirectoryPerson }) {
           <div className="rounded-lg border border-ink-800 px-3 py-2 text-center text-xs text-slate-600">{t("dir.noPhone")}</div>
         )}
       </div>
+
+      {withEvents && (
+        <div className="mt-3 border-t border-ink-800 pt-3">
+          <button
+            onClick={toggleEvents}
+            className="flex w-full items-center justify-between text-sm text-slate-300 transition-colors hover:text-white"
+          >
+            <span className="font-medium">{t("logs.driverEvents")}</span>
+            <span className="text-xs text-slate-500">{open ? t("logs.hideEvents") : t("logs.viewEvents")} {open ? "▲" : "▼"}</span>
+          </button>
+          {open && (
+            <div className="mt-3">
+              {loadingEvents ? (
+                <div className="px-2 py-4 text-center text-sm text-slate-500">{t("common.loading")}</div>
+              ) : (
+                <EventList events={events ?? []} showDriver={false} emptyText={t("logs.none")} />
+              )}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

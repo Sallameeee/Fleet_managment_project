@@ -108,11 +108,26 @@ export default function ManagerParentReportsPage() {
             >
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div className="min-w-0">
-                  <h2 className="text-lg font-semibold text-white">{r.subject}</h2>
-                  <p className="text-sm text-slate-400">
-                    {r.parent_name ?? "—"}
-                    {r.student_name ? ` · ${t("prep.about")} ${r.student_name}` : ""}
-                  </p>
+                  {/* Complainant — prominent, with contact info beneath. */}
+                  <h2 className="text-lg font-semibold text-white">{r.parent_name ?? "—"}</h2>
+                  <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-sm">
+                    {r.parent_phone ? (
+                      <a href={`tel:${r.parent_phone}`} className="font-medium text-brand-sage hover:underline">📞 {r.parent_phone}</a>
+                    ) : (
+                      <span className="text-slate-600">📞 {t("prep.noPhone")}</span>
+                    )}
+                    {r.parent_email && (
+                      <a href={`mailto:${r.parent_email}`} className="truncate text-slate-400 hover:text-brand-sage">✉ {r.parent_email}</a>
+                    )}
+                  </div>
+                  {/* About a specific child → child name + the route they ride. */}
+                  {r.student_name && (
+                    <div className="mt-1.5 inline-flex flex-wrap items-center gap-x-2 gap-y-0.5 rounded-lg border border-ink-700 bg-ink-850 px-2.5 py-1 text-xs text-slate-300">
+                      <span>{t("prep.about")} <span className="font-semibold text-white">{r.student_name}</span></span>
+                      <span className="text-slate-600">·</span>
+                      <span>🚌 {t("prep.route")}: <span className="text-slate-200">{r.student_route_name ?? t("parents.noRoute")}</span></span>
+                    </div>
+                  )}
                 </div>
                 <span
                   className={
@@ -124,7 +139,9 @@ export default function ManagerParentReportsPage() {
                 </span>
               </div>
 
-              <p className="mt-3 whitespace-pre-wrap rounded-lg border border-ink-700 bg-ink-850 px-3 py-2.5 text-sm text-slate-200">{r.message}</p>
+              {/* Subject + message. */}
+              <div className="mt-3 text-sm font-semibold text-white">{r.subject}</div>
+              <p className="mt-1 whitespace-pre-wrap rounded-lg border border-ink-700 bg-ink-850 px-3 py-2.5 text-sm text-slate-200">{r.message}</p>
 
               {open && (
                 <div className="mt-4 flex justify-end">

@@ -1227,7 +1227,9 @@ export interface ManagerReport {
   message: string;
   parent_name: string | null;
   parent_email: string | null;
+  parent_phone: string | null;
   student_name: string | null;
+  student_route_name: string | null;
   created_at: string | null;
   resolved_at: string | null;
 }
@@ -1243,6 +1245,30 @@ export async function resolveParentReport(id: string): Promise<void> {
   const res = await managerFetch(`/parent-reports/${id}/resolve`, { method: "POST" });
   if (!res.ok) throw new Error(await extractError(res, "Could not resolve the report."));
 }
+
+// --- Logs / events (School module — reuses the alerts detection engine) -------
+
+export interface LogEvent {
+  id: string;
+  type: string; // speeding | off_route | short_stop | offline
+  label: string; // human label, e.g. "Exceeded speed limit"
+  detail: string | null; // specifics, e.g. "Speed 78 km/h exceeded limit 60 km/h"
+  occurred_at: string | null;
+  driver_id: string | null;
+  driver_name: string | null;
+  route_name: string | null;
+  vehicle_bus_number: string | null;
+}
+
+async function fetchEvents(path: string): Promise<LogEvent[]> {
+  const res = await managerFetch(path);
+  if (!res.ok) throw new Error(await extractError(res, "Failed to load logs."));
+  return (await res.json()).events as LogEvent[];
+}
+
+export const getTodayLogs = () => fetchEvents("/logs/today");
+export const getAllLogs = (limit = 500) => fetchEvents(`/logs/all?limit=${limit}`);
+export const getDriverLogs = (driverId: string) => fetchEvents(`/logs/driver/${driverId}`);
 
 export const bulkCreateVehicles = (rows: Record<string, string>[]) => bulkImport("/vehicles/bulk", rows);
 export const bulkCreateBusDrivers = (rows: Record<string, string>[]) => bulkImport("/bus-drivers/bulk", rows);

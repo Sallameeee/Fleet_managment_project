@@ -18,6 +18,7 @@ from routers import (
     finance,
     history,
     live,
+    logs,
     notifications,
     organizations,
     parent_reports,
@@ -79,6 +80,7 @@ app.include_router(change_requests.router)
 app.include_router(school.router)
 app.include_router(notifications.router)
 app.include_router(profile_requests.router)
+app.include_router(logs.router)
 app.include_router(parent_reports.router)
 
 

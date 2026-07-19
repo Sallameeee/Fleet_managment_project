@@ -26,6 +26,8 @@ const MANAGER_NAV: { href: string; key: string; perm?: string; group: string; sc
   { href: "/manager/history", key: "nav.history", perm: "view_tracking", group: "nav.grpMonitoring" },
   // School-only: driver/supervisor performance monitoring.
   { href: "/manager/performance", key: "nav.performance", perm: "view_tracking", group: "nav.grpMonitoring", schoolOnly: true },
+  // School-only: driver events feed (reuses the alerts detection engine).
+  { href: "/manager/logs", key: "nav.logs", perm: "view_tracking", group: "nav.grpMonitoring", schoolOnly: true },
   { href: "/manager/drivers", key: "nav.drivers", perm: "manage_drivers", group: "nav.grpManagement" },
   // School-only: bus drivers (data-only). University orgs never see this.
   { href: "/manager/bus-drivers", key: "nav.busDrivers", perm: "manage_drivers", group: "nav.grpManagement", schoolOnly: true },

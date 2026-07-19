@@ -94,13 +94,32 @@ def list_reports(
     student_ids = list({r["student_id"] for r in reqs if r.get("student_id")})
     parents, students = {}, {}
     if parent_ids:
-        parents = {p["id"]: p for p in supabase.table("profiles").select("id, name, email").in_("id", parent_ids).execute().data}
+        parents = {p["id"]: p for p in supabase.table("profiles").select("id, name, email, phone").in_("id", parent_ids).execute().data}
     if student_ids:
-        students = {s["id"]: s.get("name") for s in supabase.table("passengers").select("id, name").in_("id", student_ids).execute().data}
+        students = {s["id"]: s for s in supabase.table("passengers").select("id, name, route_id").in_("id", student_ids).execute().data}
+
+    # The attached students' CURRENT route names (the route/bus the child rides).
+    route_ids = list({s.get("route_id") for s in students.values() if s.get("route_id")})
+    routes = {}
+    if route_ids:
+        routes = {x["id"]: x["name"] for x in supabase.table("routes").select("id, name").in_("id", route_ids).execute().data}
+
+    # Fallback parent contact (phone/email) from their children's contact fields —
+    # for a parent whose profile has none. Reuses the parent→students model.
+    contact = {}
+    if parent_ids:
+        for row in supabase.table("passengers").select("parent_id, parent_phone, parent_email").in_("parent_id", parent_ids).execute().data:
+            c = contact.setdefault(row["parent_id"], {"phone": None, "email": None})
+            if not c["phone"] and row.get("parent_phone"):
+                c["phone"] = row["parent_phone"]
+            if not c["email"] and row.get("parent_email"):
+                c["email"] = row["parent_email"]
 
     out = []
     for r in reqs:
         p = parents.get(r["parent_id"], {})
+        fb = contact.get(r["parent_id"], {})
+        st = students.get(r.get("student_id")) or {}
         out.append(
             {
                 "id": r["id"],
@@ -108,8 +127,10 @@ def list_reports(
                 "subject": r["subject"],
                 "message": r["message"],
                 "parent_name": p.get("name") or p.get("email"),
-                "parent_email": p.get("email"),
-                "student_name": students.get(r.get("student_id")),
+                "parent_email": p.get("email") or fb.get("email"),
+                "parent_phone": p.get("phone") or fb.get("phone"),
+                "student_name": st.get("name"),
+                "student_route_name": routes.get(st.get("route_id")),
                 "created_at": r.get("created_at"),
                 "resolved_at": r.get("resolved_at"),
             }
