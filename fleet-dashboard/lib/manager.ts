@@ -985,6 +985,94 @@ export async function updateSchoolCutoff(change_cutoff_time: string): Promise<{ 
   return (await res.json()) as { change_cutoff_time: string };
 }
 
+// --- Change requests (School module, manager approves parent bus-changes) ----
+
+/** Capacity impact on ONE bus for a change request (before/after the child moves). */
+export interface ChangeRequestBus {
+  route_id: string;
+  route_name: string | null;
+  vehicle_bus_number: string | null;
+  capacity: number | null;
+  count_now: number;
+  count_after: number;
+  seats_free_after: number | null;
+  would_exceed: boolean;
+}
+
+export interface ManagerChangeRequest {
+  id: string;
+  status: "pending" | "approved" | "rejected";
+  request_date: string; // yyyy-MM-dd
+  student_id: string;
+  student_name: string | null;
+  parent_email: string | null;
+  requested_stop: string | null;
+  current_bus: ChangeRequestBus | null; // the bus the child leaves
+  requested_bus: ChangeRequestBus | null; // the bus the child joins
+  created_at: string | null;
+  decided_at: string | null;
+}
+
+/** Thrown when approving would exceed the requested bus's capacity (a soft 409).
+ * The page catches this to offer the manager a force override. */
+export class CapacityExceededError extends Error {
+  capacity: number | null;
+  countAfter: number | null;
+  constructor(message: string, capacity: number | null, countAfter: number | null) {
+    super(message);
+    this.name = "CapacityExceededError";
+    this.capacity = capacity;
+    this.countAfter = countAfter;
+  }
+}
+
+export async function listChangeRequests(status?: "pending" | "approved" | "rejected"): Promise<ManagerChangeRequest[]> {
+  const q = status ? `?status=${status}` : "";
+  const res = await managerFetch(`/change-requests${q}`);
+  if (!res.ok) throw new Error(await extractError(res, "Failed to load change requests."));
+  return (await res.json()).change_requests as ManagerChangeRequest[];
+}
+
+/** Approve or reject a request. Approve is capacity-guarded server-side: without
+ * `force`, a would-exceed approval throws CapacityExceededError so the UI can
+ * confirm the override. */
+export async function decideChangeRequest(
+  id: string,
+  action: "approve" | "reject",
+  force = false,
+): Promise<void> {
+  const res = await managerFetch(`/change-requests/${id}/decision`, {
+    method: "POST",
+    body: JSON.stringify({ action, force }),
+  });
+  if (res.ok) return;
+  // Read the body ONCE (extractError would re-read a consumed stream).
+  let detail: unknown = null;
+  try {
+    detail = ((await res.json()) as { detail?: unknown })?.detail ?? null;
+  } catch {
+    /* non-JSON */
+  }
+  if (
+    res.status === 409 &&
+    detail &&
+    typeof detail === "object" &&
+    (detail as { code?: string }).code === "capacity_exceeded"
+  ) {
+    const d = detail as { message?: string; capacity?: number | null; count_after?: number | null };
+    throw new CapacityExceededError(
+      d.message ?? "The requested bus would exceed capacity.",
+      d.capacity ?? null,
+      d.count_after ?? null,
+    );
+  }
+  const msg =
+    typeof detail === "string"
+      ? detail
+      : (detail as { message?: string })?.message ?? "Could not update the request.";
+  throw new Error(msg);
+}
+
 export const bulkCreateVehicles = (rows: Record<string, string>[]) => bulkImport("/vehicles/bulk", rows);
 export const bulkCreateBusDrivers = (rows: Record<string, string>[]) => bulkImport("/bus-drivers/bulk", rows);
 export const bulkCreateDrivers = (rows: Record<string, string>[]) => bulkImport("/drivers/bulk", rows);

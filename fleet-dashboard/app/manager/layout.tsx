@@ -31,6 +31,8 @@ const MANAGER_NAV: { href: string; key: string; perm?: string; group: string; sc
   { href: "/manager/assignments", key: "nav.assignments", perm: "manage_trips", group: "nav.grpManagement" },
   { href: "/manager/passengers", key: "nav.passengers", perm: "manage_passengers", group: "nav.grpManagement" },
   { href: "/manager/alerts", key: "nav.alerts", perm: "manage_trips", group: "nav.grpOperations" },
+  // School-only: parent bus-change requests to approve/reject. University never sees this.
+  { href: "/manager/change-requests", key: "nav.changeRequests", perm: "manage_passengers", group: "nav.grpOperations", schoolOnly: true },
   // School-only: student attendance reports (manager). University never sees this.
   { href: "/manager/attendance", key: "nav.attendance", perm: "manage_passengers", group: "nav.grpOperations", schoolOnly: true },
   { href: "/manager/reports", key: "nav.reports", perm: "view_reports", group: "nav.grpOperations" },
