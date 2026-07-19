@@ -68,6 +68,16 @@ def require_school_org(org_id: str) -> None:
         )
 
 
+def require_university_org(org_id: str) -> None:
+    """The mirror of require_school_org: student-self features are UNIVERSITY-only.
+    School callers get a 403 so the two module views never cross over."""
+    if org_module(org_id) != "university":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This feature is only available for university organizations.",
+        )
+
+
 def route_vehicle_map(org_id: str, on_date: Optional[date] = None) -> dict:
     """route_id -> {vehicle_id, bus_number, capacity}. The route's bus is taken
     from assignments: the assignment on `on_date` if provided, else the latest one

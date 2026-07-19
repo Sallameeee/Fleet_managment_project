@@ -5,7 +5,7 @@
   * GET  /parent-reports            (manager) — list all, with parent + child names
   * POST /parent-reports/{id}/resolve (manager) — mark resolved
 
-School-only throughout (require_school_org). University callers get a 403.
+Available to BOTH modules (school parents + university students).
 """
 
 from datetime import datetime, timezone
@@ -16,9 +16,10 @@ from pydantic import BaseModel, Field
 
 import notifications_logic as notify
 from auth import require_permission, require_role
-from capacity_logic import require_school_org
 from database import supabase
 
+# Reports are a generic PASSENGER→MANAGER feature available to BOTH modules: school
+# parents AND university students submit; their manager sees them. No module gate.
 router = APIRouter(prefix="/parent-reports", tags=["parent-reports"])
 
 
@@ -32,7 +33,6 @@ class ReportIn(BaseModel):
 def create_report(body: ReportIn, current_user: dict = Depends(require_role("passenger"))):
     org_id = current_user["org_id"]
     parent_id = current_user["id"]
-    require_school_org(org_id)
 
     student_id = (body.student_id or "").strip() or None
     if student_id:
@@ -64,7 +64,6 @@ def create_report(body: ReportIn, current_user: dict = Depends(require_role("pas
 @router.get("/mine")
 def my_reports(current_user: dict = Depends(require_role("passenger"))):
     org_id = current_user["org_id"]
-    require_school_org(org_id)
     rows = (
         supabase.table("parent_reports")
         .select("id, subject, message, status, created_at, student_id")
@@ -83,7 +82,6 @@ def list_reports(
     status_filter: Optional[str] = Query(None, alias="status"),
 ):
     org_id = current_user["org_id"]
-    require_school_org(org_id)
 
     q = supabase.table("parent_reports").select("*").eq("org_id", org_id)
     if status_filter in ("open", "resolved"):
@@ -141,7 +139,6 @@ def list_reports(
 @router.post("/{report_id}/resolve")
 def resolve_report(report_id: str, current_user: dict = Depends(require_permission("manage_passengers"))):
     org_id = current_user["org_id"]
-    require_school_org(org_id)
     r = supabase.table("parent_reports").select("id, status").eq("id", report_id).eq("org_id", org_id).limit(1).execute().data
     if not r:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Report not found.")

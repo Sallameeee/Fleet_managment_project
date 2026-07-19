@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from auth import require_role
-from capacity_logic import earliest_request_date, read_cutoff, require_school_org
+from capacity_logic import earliest_request_date, read_cutoff, require_school_org, require_university_org
 from database import supabase
 from live_logic import LOCAL_TZ, driver_live_positions, pick_current_assignment
 
@@ -161,6 +161,95 @@ def my_change_requests(current_user: dict = Depends(require_role("passenger"))):
     return {"count": len(out), "change_requests": out}
 
 
+def _build_track(org_id: str, subject: dict, effective_route_id, effective_stop, changed_today: bool) -> dict:
+    """Shared track PAYLOAD builder: route geometry + ordered stops, the effective
+    stop resolved to coordinates (for distance/ETA), today's assignment (supervisor
+    + bus driver + bus), and the live bus position/online. Module-AGNOSTIC — the
+    caller decides whose row it is and which module gate to apply (school child vs
+    university self), so this never mixes the two views."""
+    result = {
+        "child": subject,
+        "changed_today": changed_today,
+        "effective_stop": effective_stop,
+        "drop_off_stop": None,
+        "route": None,
+        "bus": None,
+        "supervisor": None,
+        "bus_driver": None,
+        "position": None,
+        "online": False,
+    }
+    if not effective_route_id:
+        return result
+
+    today = datetime.now(LOCAL_TZ).date().isoformat()
+    r = supabase.table("routes").select("id, name, color, geometry").eq("id", effective_route_id).eq("org_id", org_id).limit(1).execute().data
+    route = r[0] if r else {}
+    stops = (
+        supabase.table("route_stops")
+        .select("id, name, lat, lng, stop_order")
+        .eq("route_id", effective_route_id)
+        .order("stop_order", desc=False)
+        .execute()
+        .data
+    )
+    result["route"] = {
+        "id": route.get("id"),
+        "name": route.get("name"),
+        "color": route.get("color"),
+        "geometry": route.get("geometry"),
+        "stops": stops,
+    }
+
+    # Resolve the effective stop NAME to coordinates so the map can measure the
+    # distance/ETA from the live bus to THAT stop.
+    if effective_stop:
+        target = next((s for s in stops if (s.get("name") or "").strip().lower() == effective_stop.strip().lower()), None)
+        if target:
+            result["drop_off_stop"] = {"name": target.get("name"), "lat": target.get("lat"), "lng": target.get("lng"), "stop_order": target.get("stop_order")}
+        else:
+            result["drop_off_stop"] = {"name": effective_stop, "lat": None, "lng": None, "stop_order": None}
+
+    # Today's assignment → supervisor (app user), bus driver, bus.
+    assigns = (
+        supabase.table("assignments")
+        .select("driver_id, vehicle_id, bus_driver_id, start_time, end_time")
+        .eq("org_id", org_id)
+        .eq("route_id", effective_route_id)
+        .eq("trip_date", today)
+        .execute()
+        .data
+    )
+    a = pick_current_assignment(assigns, datetime.now(LOCAL_TZ).time()) if assigns else None
+    supervisor_driver_id = None
+    if a:
+        supervisor_driver_id = a.get("driver_id")
+        if supervisor_driver_id:
+            sp = supabase.table("profiles").select("name, phone").eq("id", supervisor_driver_id).limit(1).execute().data
+            if sp:
+                result["supervisor"] = {"name": sp[0].get("name"), "phone": sp[0].get("phone")}
+        if a.get("bus_driver_id"):
+            bd = supabase.table("bus_drivers").select("name, phone").eq("id", a["bus_driver_id"]).eq("org_id", org_id).limit(1).execute().data
+            if bd:
+                result["bus_driver"] = {"name": bd[0].get("name"), "phone": bd[0].get("phone")}
+        if a.get("vehicle_id"):
+            v = supabase.table("vehicles").select("bus_number, plate_number").eq("id", a["vehicle_id"]).limit(1).execute().data
+            if v:
+                result["bus"] = {"bus_number": v[0].get("bus_number"), "plate_number": v[0].get("plate_number")}
+
+    # Live position: the SAME feed the manager Full View uses.
+    feed = driver_live_positions(org_id)
+    entry = None
+    if supervisor_driver_id:
+        entry = next((d for d in feed if d["driver_id"] == supervisor_driver_id), None)
+    if entry is None:
+        entry = next((d for d in feed if d.get("route_id") == effective_route_id), None)
+    if entry:
+        result["position"] = entry.get("position")
+        result["online"] = entry.get("online", False)
+    return result
+
+
 @router.get("/children/{student_id}/track")
 def track_child(student_id: str, current_user: dict = Depends(require_role("passenger"))):
     """Everything needed to track ONE of the parent's children today: the child's
@@ -206,96 +295,34 @@ def track_child(student_id: str, current_user: dict = Depends(require_role("pass
     # when changed, otherwise the student's normal drop-off stop. Both are names.
     effective_stop = (cr[0].get("requested_stop") if changed_today else child.get("drop_off_stop")) or None
 
-    result = {
-        "child": {"id": child["id"], "name": child.get("name"), "grade": child.get("grade"), "class_name": child.get("class_name")},
-        "changed_today": changed_today,
-        "effective_stop": effective_stop,       # the drop-off stop NAME (normal or changed)
-        "drop_off_stop": None,                   # resolved {name, lat, lng, stop_order} for the map — filled below
-        "route": None,
-        "bus": None,
-        "supervisor": None,
-        "bus_driver": None,
-        "position": None,
-        "online": False,
-    }
-    if not effective_route_id:
-        return result  # no route assigned yet
+    subject = {"id": child["id"], "name": child.get("name"), "grade": child.get("grade"), "class_name": child.get("class_name")}
+    return _build_track(org_id, subject, effective_route_id, effective_stop, changed_today)
 
-    # Route + ordered stops.
-    r = supabase.table("routes").select("id, name, color, geometry").eq("id", effective_route_id).eq("org_id", org_id).limit(1).execute().data
-    route = r[0] if r else {}
-    stops = (
-        supabase.table("route_stops")
-        .select("id, name, lat, lng, stop_order")
-        .eq("route_id", effective_route_id)
-        .order("stop_order", desc=False)
-        .execute()
-        .data
-    )
-    result["route"] = {
-        "id": route.get("id"),
-        "name": route.get("name"),
-        "color": route.get("color"),
-        "geometry": route.get("geometry"),
-        "stops": stops,
-    }
 
-    # Resolve the effective drop-off stop NAME to its coordinates on this route so
-    # the parent map can measure distance/ETA from the live bus to THAT stop. Match
-    # case-insensitively; if the stop can't be found on the route, leave coords null
-    # (the name still shows).
-    if effective_stop:
-        target = next((s for s in stops if (s.get("name") or "").strip().lower() == effective_stop.strip().lower()), None)
-        if target:
-            result["drop_off_stop"] = {
-                "name": target.get("name"),
-                "lat": target.get("lat"),
-                "lng": target.get("lng"),
-                "stop_order": target.get("stop_order"),
-            }
-        else:
-            result["drop_off_stop"] = {"name": effective_stop, "lat": None, "lng": None, "stop_order": None}
+@router.get("/me/track")
+def track_me(current_user: dict = Depends(require_role("passenger"))):
+    """UNIVERSITY STUDENT tracks THEIR OWN bus: their route + stops, their own stop,
+    the live bus, and the supervisor/driver contact. UNIVERSITY orgs ONLY — schools
+    use the parent endpoint /children/{id}/track; the two never overlap. Everything
+    is derived from the caller's OWN passengers row (no child picker, no change
+    requests)."""
+    org_id = current_user["org_id"]
+    require_university_org(org_id)  # hard module gate → school parents get a 403 here
 
-    # Today's assignment for the effective route → supervisor (app user), bus,
-    # bus driver. Pick the current one by time if there are several shifts.
-    assigns = (
-        supabase.table("assignments")
-        .select("driver_id, vehicle_id, bus_driver_id, start_time, end_time")
+    st = (
+        supabase.table("passengers")
+        .select("id, name, route_id, drop_off_stop")
+        .eq("id", current_user["id"])  # the student IS their own passengers row
         .eq("org_id", org_id)
-        .eq("route_id", effective_route_id)
-        .eq("trip_date", today)
+        .limit(1)
         .execute()
         .data
     )
-    a = pick_current_assignment(assigns, datetime.now(LOCAL_TZ).time()) if assigns else None
-    supervisor_driver_id = None
-    if a:
-        supervisor_driver_id = a.get("driver_id")
-        if supervisor_driver_id:
-            sp = supabase.table("profiles").select("name, phone").eq("id", supervisor_driver_id).limit(1).execute().data
-            if sp:
-                result["supervisor"] = {"name": sp[0].get("name"), "phone": sp[0].get("phone")}
-        if a.get("bus_driver_id"):
-            bd = supabase.table("bus_drivers").select("name, phone").eq("id", a["bus_driver_id"]).eq("org_id", org_id).limit(1).execute().data
-            if bd:
-                result["bus_driver"] = {"name": bd[0].get("name"), "phone": bd[0].get("phone")}  # phone visible to parent
-        if a.get("vehicle_id"):
-            v = supabase.table("vehicles").select("bus_number, plate_number").eq("id", a["vehicle_id"]).limit(1).execute().data
-            if v:
-                result["bus"] = {"bus_number": v[0].get("bus_number"), "plate_number": v[0].get("plate_number")}
-
-    # Live position: the SAME feed the manager Full View uses. Match the child's
-    # bus by its supervisor (driver), falling back to the route.
-    feed = driver_live_positions(org_id)
-    entry = None
-    if supervisor_driver_id:
-        entry = next((d for d in feed if d["driver_id"] == supervisor_driver_id), None)
-    if entry is None:
-        entry = next((d for d in feed if d.get("route_id") == effective_route_id), None)
-    if entry:
-        result["position"] = entry.get("position")
-        result["online"] = entry.get("online", False)
-    return result
+    subject = {"id": current_user["id"], "name": (st[0].get("name") if st else current_user.get("name"))}
+    if not st:
+        return _build_track(org_id, subject, None, None, False)  # no student record yet
+    s = st[0]
+    return _build_track(org_id, subject, s.get("route_id"), s.get("drop_off_stop"), False)
 
 
 @router.get("/live")

@@ -35,8 +35,8 @@ export default function ManagerParentReportsPage() {
   }, [filter]);
 
   useEffect(() => {
-    if (isSchool) load();
-  }, [isSchool, load]);
+    load(); // reports exist for both school and university managers
+  }, [load]);
 
   const { focus, highlight } = useFocusHighlight("rep-", !loading);
   useEffect(() => {
@@ -56,15 +56,12 @@ export default function ManagerParentReportsPage() {
     }
   }
 
-  if (!isSchool) {
-    return <div className="text-sm text-slate-400">This page is only available for school organizations.</div>;
-  }
-
+  // Reports serve BOTH modules — no school-only guard. Title reflects the module.
   return (
     <div>
       <div className="mb-6 flex items-start justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-semibold text-white">{t("prep.title")}</h1>
+          <h1 className="text-2xl font-semibold text-white">{isSchool ? t("prep.title") : t("prep.titleStudent")}</h1>
           <p className="text-sm text-slate-400">{loading ? t("common.loading") : t("prep.subtitle")}</p>
         </div>
         <button onClick={load} className="rounded-lg border border-ink-700 px-3 py-2 text-sm text-slate-300 transition-colors hover:border-brand hover:text-white">

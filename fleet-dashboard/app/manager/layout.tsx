@@ -45,7 +45,8 @@ const MANAGER_NAV: { href: string; key: string; perm?: string; group: string; sc
   // School-only: parent profile-edit requests to approve/reject.
   { href: "/manager/profile-requests", key: "nav.profileRequests", perm: "manage_passengers", group: "nav.grpOperations", schoolOnly: true },
   // School-only: issues parents reported.
-  { href: "/manager/parent-reports", key: "nav.parentReports", perm: "manage_passengers", group: "nav.grpOperations", schoolOnly: true },
+  // Reports serve BOTH modules (school parents + university students report to the manager).
+  { href: "/manager/parent-reports", key: "nav.parentReports", perm: "manage_passengers", group: "nav.grpOperations" },
   // School-only: student attendance reports (manager). University never sees this.
   { href: "/manager/attendance", key: "nav.attendance", perm: "manage_passengers", group: "nav.grpOperations", schoolOnly: true },
   { href: "/manager/reports", key: "nav.reports", perm: "view_reports", group: "nav.grpOperations" },
@@ -108,6 +109,7 @@ export default function ManagerLayout({ children }: { children: React.ReactNode 
     // School orgs reuse the SAME systems, just relabelled.
     label: isSchool && n.key === "nav.drivers" ? t("nav.supervisors")
       : isSchool && n.key === "nav.passengers" ? t("nav.students")
+      : !isSchool && n.key === "nav.parentReports" ? t("nav.studentReports")
       : t(n.key),
     badge: n.href === "/manager/alerts" ? unread : undefined,
     group: t(n.group),

@@ -291,6 +291,8 @@ export const dict: Record<string, { en: string; ar: string }> = {
   "hist.pickup": { en: "First pickup", ar: "أول ركوب" },
   "hist.schoolArrival": { en: "School arrival", ar: "الوصول للمدرسة" },
   "hist.homeArrival": { en: "Home drop-off", ar: "الوصول للمنزل" },
+  "nav.studentReports": { en: "Student Reports", ar: "بلاغات الطلاب" },
+  "prep.titleStudent": { en: "Student Reports", ar: "بلاغات الطلاب" },
   "prep.title": { en: "Parent Reports", ar: "بلاغات أولياء الأمور" },
   "prep.subtitle": { en: "Issues reported by parents.", ar: "المشكلات التي أبلغ عنها أولياء الأمور." },
   "prep.none": { en: "No reports.", ar: "لا توجد بلاغات." },
