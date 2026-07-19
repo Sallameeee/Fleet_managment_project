@@ -18,6 +18,7 @@ from typing import List, Optional, Union
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
+import notifications_logic as notify
 from auth import require_permission, require_role
 from database import supabase
 
@@ -320,6 +321,9 @@ def start_trip(
         )
 
     trip = result.data[0]
+    # School only, best-effort: tell each parent whose child is on this bus today
+    # that "<child>'s bus has started" (deduped per trip+parent).
+    notify.trip_started(trip)
     return _enrich(
         trip,
         driver_name=current_user.get("name"),
@@ -701,6 +705,10 @@ def record_stop_visit(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Could not record stop visit: {exc}",
         )
+    # School only, best-effort: notify parents whose child's drop-off stop is THIS
+    # stop that "<child>'s bus has arrived" (deduped per trip+student, so the
+    # arrival + departure calls for the same stop don't double-notify).
+    notify.child_arrived(trip, body.stop_id)
     return row
 
 

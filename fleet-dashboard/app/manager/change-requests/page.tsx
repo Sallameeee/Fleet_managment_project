@@ -71,9 +71,17 @@ export default function ManagerChangeRequestsPage() {
 
   return (
     <div>
-      <div className="mb-6">
-        <h1 className="text-2xl font-semibold text-white">{t("cr.title")}</h1>
-        <p className="text-sm text-slate-400">{loading ? t("common.loading") : t("cr.subtitle")}</p>
+      <div className="mb-6 flex items-start justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-semibold text-white">{t("cr.title")}</h1>
+          <p className="text-sm text-slate-400">{loading ? t("common.loading") : t("cr.subtitle")}</p>
+        </div>
+        <button
+          onClick={load}
+          className="rounded-lg border border-ink-700 px-3 py-2 text-sm text-slate-300 transition-colors hover:border-brand hover:text-white"
+        >
+          ↻ {t("common.reload")}
+        </button>
       </div>
 
       {/* Status filter */}

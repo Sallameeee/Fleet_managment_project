@@ -17,6 +17,7 @@ import { ModuleProvider } from "@/lib/module";
 import Sidebar, { type NavItem } from "@/components/Sidebar";
 import ThemeToggle from "@/components/ThemeToggle";
 import LanguageSwitcher from "@/components/LanguageSwitcher";
+import NotificationBell from "@/components/NotificationBell";
 
 // Each nav item: href, translation key for the label, required permission.
 const MANAGER_NAV: { href: string; key: string; perm?: string; group: string; schoolOnly?: boolean }[] = [
@@ -33,6 +34,8 @@ const MANAGER_NAV: { href: string; key: string; perm?: string; group: string; sc
   { href: "/manager/alerts", key: "nav.alerts", perm: "manage_trips", group: "nav.grpOperations" },
   // School-only: parent bus-change requests to approve/reject. University never sees this.
   { href: "/manager/change-requests", key: "nav.changeRequests", perm: "manage_passengers", group: "nav.grpOperations", schoolOnly: true },
+  // School-only: parent profile-edit requests to approve/reject.
+  { href: "/manager/profile-requests", key: "nav.profileRequests", perm: "manage_passengers", group: "nav.grpOperations", schoolOnly: true },
   // School-only: student attendance reports (manager). University never sees this.
   { href: "/manager/attendance", key: "nav.attendance", perm: "manage_passengers", group: "nav.grpOperations", schoolOnly: true },
   { href: "/manager/reports", key: "nav.reports", perm: "view_reports", group: "nav.grpOperations" },
@@ -129,6 +132,8 @@ export default function ManagerLayout({ children }: { children: React.ReactNode 
           </div>
         )}
         <header className="flex flex-wrap items-center justify-end gap-x-3 gap-y-2 border-b border-ink-800 px-6 py-3 text-sm">
+          {/* School-only: manager notification bell, next to the language toggle. */}
+          {isSchool && <NotificationBell />}
           <LanguageSwitcher />
           <ThemeToggle />
           <span className="text-slate-400">

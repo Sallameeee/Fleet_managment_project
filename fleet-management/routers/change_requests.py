@@ -14,6 +14,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
+import notifications_logic as notify
 from auth import require_permission, require_role
 from capacity_logic import (
     LOCAL_TZ,
@@ -114,6 +115,8 @@ def create_change_request(
         row = supabase.table("change_requests").insert(payload).execute().data[0]
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Could not create change request: {exc}")
+    # Notify the manager that a new request awaits approval (school-gated, best-effort).
+    notify.change_request_created(org_id, row["id"], student.get("name"))
     return {"id": row["id"], "status": "pending", "student_id": body.student_id, "request_date": payload["request_date"]}
 
 
@@ -230,11 +233,19 @@ def decide_change_request(
     if action not in ("approve", "reject"):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="action must be 'approve' or 'reject'.")
 
+    # Names for the parent-facing notification.
+    _s = supabase.table("passengers").select("name").eq("id", req["student_id"]).limit(1).execute().data
+    student_name = _s[0].get("name") if _s else None
+    _rn = supabase.table("routes").select("name").eq("id", req["requested_route_id"]).limit(1).execute().data
+    route_name = _rn[0].get("name") if _rn else None
+    parent_id = req.get("parent_id")
+
     now = datetime.now(timezone.utc).isoformat()
     if action == "reject":
         supabase.table("change_requests").update(
             {"status": "rejected", "decided_at": now, "decided_by": current_user["id"]}
         ).eq("id", req_id).eq("org_id", org_id).execute()
+        notify.change_request_decided(org_id, parent_id, req_id, False, student_name, route_name)
         return {"id": req_id, "status": "rejected"}
 
     # APPROVE — capacity guard on the requested bus.
@@ -258,4 +269,5 @@ def decide_change_request(
     supabase.table("change_requests").update(
         {"status": "approved", "decided_at": now, "decided_by": current_user["id"]}
     ).eq("id", req_id).eq("org_id", org_id).execute()
+    notify.change_request_decided(org_id, parent_id, req_id, True, student_name, route_name)
     return {"id": req_id, "status": "approved", "requested_count_after": count_after, "capacity": cap}

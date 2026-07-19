@@ -18,9 +18,11 @@ from routers import (
     finance,
     history,
     live,
+    notifications,
     organizations,
     passenger,
     passengers,
+    profile_requests,
     report_schedules,
     reports,
     routes,
@@ -74,6 +76,8 @@ app.include_router(attendance.router)
 app.include_router(capacity.router)
 app.include_router(change_requests.router)
 app.include_router(school.router)
+app.include_router(notifications.router)
+app.include_router(profile_requests.router)
 
 
 @app.get("/")

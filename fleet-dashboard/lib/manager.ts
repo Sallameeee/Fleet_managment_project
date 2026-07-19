@@ -1073,6 +1073,65 @@ export async function decideChangeRequest(
   throw new Error(msg);
 }
 
+// --- Notifications (School module) -------------------------------------------
+
+export interface ManagerNotification {
+  id: string;
+  type: string;
+  title: string;
+  body: string | null;
+  related_id: string | null;
+  is_read: boolean;
+  created_at: string;
+}
+
+export async function listNotifications(): Promise<{ notifications: ManagerNotification[]; unread: number }> {
+  const res = await managerFetch("/notifications");
+  if (!res.ok) throw new Error(await extractError(res, "Failed to load notifications."));
+  const d = (await res.json()) as { notifications?: ManagerNotification[]; unread?: number };
+  return { notifications: d.notifications ?? [], unread: d.unread ?? 0 };
+}
+
+export async function getUnreadNotificationCount(): Promise<number> {
+  const res = await managerFetch("/notifications/unread-count");
+  if (!res.ok) return 0;
+  return ((await res.json()) as { unread?: number }).unread ?? 0;
+}
+
+export async function markAllNotificationsRead(): Promise<void> {
+  await managerFetch("/notifications/read-all", { method: "POST" });
+}
+
+// --- Profile-edit requests (School module) -----------------------------------
+
+export interface ProfileFields {
+  name: string | null;
+  phone: string | null;
+  email: string | null;
+}
+
+export interface ManagerProfileRequest {
+  id: string;
+  status: "pending" | "approved" | "rejected";
+  parent_id: string;
+  current: ProfileFields;
+  proposed: ProfileFields;
+  created_at: string | null;
+  decided_at: string | null;
+}
+
+export async function listProfileRequests(status?: "pending" | "approved" | "rejected"): Promise<ManagerProfileRequest[]> {
+  const q = status ? `?status=${status}` : "";
+  const res = await managerFetch(`/profile-requests${q}`);
+  if (!res.ok) throw new Error(await extractError(res, "Failed to load profile requests."));
+  return (await res.json()).profile_requests as ManagerProfileRequest[];
+}
+
+export async function decideProfileRequest(id: string, action: "approve" | "reject"): Promise<void> {
+  const res = await managerFetch(`/profile-requests/${id}/decision`, { method: "POST", body: JSON.stringify({ action }) });
+  if (!res.ok) throw new Error(await extractError(res, "Could not update the request."));
+}
+
 export const bulkCreateVehicles = (rows: Record<string, string>[]) => bulkImport("/vehicles/bulk", rows);
 export const bulkCreateBusDrivers = (rows: Record<string, string>[]) => bulkImport("/bus-drivers/bulk", rows);
 export const bulkCreateDrivers = (rows: Record<string, string>[]) => bulkImport("/drivers/bulk", rows);
