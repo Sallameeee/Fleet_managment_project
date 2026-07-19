@@ -36,9 +36,11 @@ def create_notification(
     body: str | None = None,
     related_id: str | None = None,
     dedup_key: str | None = None,
+    result: str | None = None,
 ) -> None:
     """Insert one notification. School-only; a duplicate dedup_key (unique index)
-    or any other error is swallowed so the caller is never affected."""
+    or any other error is swallowed so the caller is never affected. `result`
+    ('approved'|'rejected') lets the app color request-result notifications."""
     try:
         if not _is_school(org_id):
             return
@@ -52,6 +54,7 @@ def create_notification(
                 "body": body,
                 "related_id": str(related_id) if related_id is not None else None,
                 "dedup_key": dedup_key,
+                "result": result,
             }
         ).execute()
     except Exception as exc:  # duplicate dedup_key or transient error → ignore
@@ -78,6 +81,7 @@ def change_request_decided(
         "Bus change approved" if approved else "Bus change rejected",
         f"{who}'s bus change{where} was {'approved' if approved else 'rejected'}.",
         related_id=req_id, dedup_key=f"cr_res:{req_id}",
+        result="approved" if approved else "rejected",
     )
 
 
@@ -99,6 +103,17 @@ def profile_request_decided(org_id: str, parent_id: str, req_id: str, approved: 
         if approved
         else "Your personal info change was rejected. Nothing was changed.",
         related_id=req_id, dedup_key=f"pr_res:{req_id}",
+        result="approved" if approved else "rejected",
+    )
+
+
+# ── Parent-reported issues ───────────────────────────────────────────────────
+def parent_report_created(org_id: str, report_id: str, parent_name: str | None, subject: str) -> None:
+    create_notification(
+        org_id, "manager", None, "parent_report_new",
+        "New parent report",
+        f"{parent_name or 'A parent'} reported: {subject}",
+        related_id=report_id, dedup_key=f"report_new:{report_id}",
     )
 
 

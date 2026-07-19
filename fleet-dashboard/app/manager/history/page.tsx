@@ -313,6 +313,34 @@ export default function ManagerHistoryPage() {
             </div>
           )}
 
+          {/* School trip log — derived pickup / school-arrival / home-arrival */}
+          {selected?.school_log && (
+            <div className="rounded-xl border border-ink-800 bg-ink-900/50 p-3">
+              <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                {t("hist.tripLog")} · {selected.school_log.session === "morning" ? t("hist.morning") : t("hist.afternoon")}
+              </h3>
+              <div className="space-y-1.5 text-sm">
+                {selected.school_log.session === "morning" ? (
+                  <>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-slate-400">{t("hist.pickup")}</span>
+                      <span className="font-semibold text-white">{fmtClockIso(selected.school_log.pickup_time)}</span>
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-slate-400">{t("hist.schoolArrival")}</span>
+                      <span className="font-semibold text-white">{fmtClockIso(selected.school_log.school_arrival_time)}</span>
+                    </div>
+                  </>
+                ) : (
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-slate-400">{t("hist.homeArrival")}</span>
+                    <span className="font-semibold text-white">{fmtClockIso(selected.school_log.home_arrival_time)}</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
           {/* Per-stop waiting times (from stop_visits) */}
           {selected && selected.stop_visits.length > 0 && (
             <div className="rounded-xl border border-ink-800 bg-ink-900/50 p-3">

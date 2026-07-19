@@ -11,6 +11,7 @@ import {
 import { useT } from "@/lib/i18n";
 import { useIsSchool } from "@/lib/module";
 import { useToast } from "@/lib/toast";
+import { useFocusHighlight } from "@/lib/useFocusHighlight";
 import Modal from "@/components/Modal";
 
 type Filter = "pending" | "approved" | "rejected" | "all";
@@ -45,6 +46,12 @@ export default function ManagerChangeRequestsPage() {
   useEffect(() => {
     if (isSchool) load();
   }, [isSchool, load]);
+
+  // Jump to a specific request when arriving from a notification (?focus=<id>).
+  const { focus, highlight } = useFocusHighlight("cr-", !loading);
+  useEffect(() => {
+    if (focus) setFilter("all"); // ensure the item is in view regardless of status
+  }, [focus]);
 
   async function decide(req: ManagerChangeRequest, action: "approve" | "reject", force = false) {
     setActioningId(req.id);
@@ -112,7 +119,9 @@ export default function ManagerChangeRequestsPage() {
 
       <div className="space-y-4">
         {rows.map((r) => (
-          <RequestCard key={r.id} r={r} actioning={actioningId === r.id} onApprove={() => decide(r, "approve")} onReject={() => decide(r, "reject")} />
+          <div key={r.id} id={"cr-" + r.id} className={highlight === r.id ? "rounded-xl ring-2 ring-brand ring-offset-2 ring-offset-ink-950" : ""}>
+            <RequestCard r={r} actioning={actioningId === r.id} onApprove={() => decide(r, "approve")} onReject={() => decide(r, "reject")} />
+          </div>
         ))}
       </div>
 

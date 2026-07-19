@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import {
   listNotifications,
   getUnreadNotificationCount,
@@ -9,10 +10,15 @@ import {
 } from "@/lib/manager";
 import { useT } from "@/lib/i18n";
 
+// Auto-refresh cadence for the badge (polling — no push/Firebase).
+const POLL_MS = 15000;
+
 /** Manager notification bell for the dashboard header (school orgs only). Polls
- * the unread count; opening the panel loads the list and marks everything read. */
+ * the unread count every 15s; opening the panel loads the list and marks it read;
+ * a request notification navigates to that request. */
 export default function NotificationBell() {
   const { t } = useT();
+  const router = useRouter();
   const [unread, setUnread] = useState(0);
   const [open, setOpen] = useState(false);
   const [items, setItems] = useState<ManagerNotification[]>([]);
@@ -23,13 +29,13 @@ export default function NotificationBell() {
     getUnreadNotificationCount().then(setUnread).catch(() => {});
   }, []);
 
+  // Auto-light-up: poll the unread count so the badge appears on its own.
   useEffect(() => {
     refreshCount();
-    const id = setInterval(refreshCount, 30000);
+    const id = setInterval(refreshCount, POLL_MS);
     return () => clearInterval(id);
   }, [refreshCount]);
 
-  // Close on outside click.
   useEffect(() => {
     if (!open) return;
     const onClick = (e: MouseEvent) => {
@@ -39,16 +45,13 @@ export default function NotificationBell() {
     return () => document.removeEventListener("mousedown", onClick);
   }, [open]);
 
-  async function toggle() {
-    const next = !open;
-    setOpen(next);
-    if (!next) return;
+  const loadList = useCallback(async (markRead: boolean) => {
     setLoading(true);
     try {
       const { notifications } = await listNotifications();
       setItems(notifications);
-      if (notifications.some((n) => !n.is_read)) {
-        await markAllNotificationsRead(); // mark read on view
+      if (markRead && notifications.some((n) => !n.is_read)) {
+        await markAllNotificationsRead();
         setUnread(0);
       }
     } catch {
@@ -56,6 +59,28 @@ export default function NotificationBell() {
     } finally {
       setLoading(false);
     }
+  }, []);
+
+  async function toggle() {
+    const next = !open;
+    setOpen(next);
+    if (next) await loadList(true); // mark read on view
+  }
+
+  // Request notifications jump to the item on the relevant page.
+  function targetFor(n: ManagerNotification): string | null {
+    if (!n.related_id) return null;
+    if (n.type === "change_request_new") return `/manager/change-requests?focus=${n.related_id}`;
+    if (n.type === "profile_request_new") return `/manager/profile-requests?focus=${n.related_id}`;
+    if (n.type === "parent_report_new") return `/manager/parent-reports?focus=${n.related_id}`;
+    return null;
+  }
+
+  function openItem(n: ManagerNotification) {
+    const href = targetFor(n);
+    if (!href) return;
+    setOpen(false);
+    router.push(href);
   }
 
   return (
@@ -74,9 +99,17 @@ export default function NotificationBell() {
       </button>
 
       {open && (
-        <div className="absolute right-0 z-50 mt-2 w-80 overflow-hidden rounded-xl border border-ink-700 bg-ink-900 shadow-xl">
+        <div className="absolute right-0 z-50 mt-2 w-80 max-w-[calc(100vw-2rem)] overflow-hidden rounded-xl border border-ink-700 bg-ink-900 shadow-xl">
           <div className="flex items-center justify-between border-b border-ink-800 px-4 py-2.5">
             <span className="text-sm font-semibold text-white">{t("notif.title")}</span>
+            <button
+              onClick={() => loadList(false)}
+              aria-label={t("common.reload")}
+              title={t("common.reload")}
+              className="rounded-md p-1 text-slate-400 hover:bg-ink-800 hover:text-white"
+            >
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 4 23 10 17 10" /><polyline points="1 20 1 14 7 14" /><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" /></svg>
+            </button>
           </div>
           <div className="max-h-96 overflow-y-auto">
             {loading ? (
@@ -84,18 +117,30 @@ export default function NotificationBell() {
             ) : items.length === 0 ? (
               <div className="px-4 py-8 text-center text-sm text-slate-500">{t("notif.none")}</div>
             ) : (
-              items.map((n) => (
-                <div key={n.id} className={"border-b border-ink-800 px-4 py-3 " + (n.is_read ? "" : "bg-brand/5")}>
-                  <div className="flex items-start gap-2">
-                    {!n.is_read && <span className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-brand" />}
-                    <div className="min-w-0">
-                      <p className="text-sm font-semibold text-white">{n.title}</p>
-                      {n.body && <p className="mt-0.5 text-xs text-slate-400">{n.body}</p>}
-                      <p className="mt-1 text-[11px] text-slate-600">{timeAgo(n.created_at)}</p>
+              items.map((n) => {
+                const clickable = targetFor(n) !== null;
+                return (
+                  <button
+                    key={n.id}
+                    onClick={() => openItem(n)}
+                    disabled={!clickable}
+                    className={
+                      "block w-full border-b border-ink-800 px-4 py-3 text-left " +
+                      (n.is_read ? "" : "bg-brand/5 ") +
+                      (clickable ? "cursor-pointer hover:bg-ink-800" : "cursor-default")
+                    }
+                  >
+                    <div className="flex items-start gap-2">
+                      {!n.is_read && <span className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-brand" />}
+                      <div className="min-w-0">
+                        <p className="text-sm font-semibold text-white">{n.title}</p>
+                        {n.body && <p className="mt-0.5 text-xs text-slate-400">{n.body}</p>}
+                        <p className="mt-1 text-[11px] text-slate-600">{timeAgo(n.created_at)}{clickable ? " · tap to open" : ""}</p>
+                      </div>
                     </div>
-                  </div>
-                </div>
-              ))
+                  </button>
+                );
+              })
             )}
           </div>
         </div>

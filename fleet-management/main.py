@@ -20,6 +20,7 @@ from routers import (
     live,
     notifications,
     organizations,
+    parent_reports,
     passenger,
     passengers,
     profile_requests,
@@ -78,6 +79,7 @@ app.include_router(change_requests.router)
 app.include_router(school.router)
 app.include_router(notifications.router)
 app.include_router(profile_requests.router)
+app.include_router(parent_reports.router)
 
 
 @app.get("/")

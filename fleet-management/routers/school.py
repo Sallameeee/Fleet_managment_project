@@ -6,9 +6,10 @@
 School orgs only; University callers get a 403.
 """
 
-from datetime import datetime, time
+from datetime import date, datetime, time, timedelta
+from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from auth import require_permission
@@ -132,3 +133,74 @@ def directory(current_user: dict = Depends(require_permission("manage_drivers"))
     bus_drivers.sort(key=lambda x: (x["name"] or "").lower())
 
     return {"supervisors": supervisors, "bus_drivers": bus_drivers}
+
+
+@router.get("/performance")
+def performance(
+    current_user: dict = Depends(require_permission("view_tracking")),
+    date_from: Optional[date] = Query(None),
+    date_to: Optional[date] = Query(None),
+):
+    """Per-trip + per-supervisor performance over a date range (from the persisted
+    trip_performance rows): speeding, off-route, and schedule adherence. School
+    only. Rows populate as trips are ended."""
+    org_id = current_user["org_id"]
+    require_school_org(org_id)
+
+    today = datetime.now(LOCAL_TZ).date()
+    d_from = date_from or (today - timedelta(days=14))
+    d_to = date_to or today
+    rows = (
+        supabase.table("trip_performance")
+        .select("*")
+        .eq("org_id", org_id)
+        .gte("trip_date", d_from.isoformat())
+        .lte("trip_date", d_to.isoformat())
+        .order("trip_date", desc=True)
+        .execute()
+        .data
+    )
+    driver_ids = list({r["driver_id"] for r in rows if r.get("driver_id")})
+    route_ids = list({r["route_id"] for r in rows if r.get("route_id")})
+    names, rnames = {}, {}
+    if driver_ids:
+        names = {p["id"]: p["name"] for p in supabase.table("profiles").select("id, name").in_("id", driver_ids).execute().data}
+    if route_ids:
+        rnames = {r["id"]: r["name"] for r in supabase.table("routes").select("id, name").in_("id", route_ids).execute().data}
+
+    trips = []
+    agg: dict = {}
+    for r in rows:
+        did = r.get("driver_id")
+        trips.append(
+            {
+                "trip_id": r["trip_id"],
+                "trip_date": r.get("trip_date"),
+                "driver_id": did,
+                "driver_name": names.get(did),
+                "route_name": rnames.get(r.get("route_id")),
+                "speeding_count": r.get("speeding_count") or 0,
+                "off_route_count": r.get("off_route_count") or 0,
+                "stops_total": r.get("stops_total") or 0,
+                "stops_on_time": r.get("stops_on_time") or 0,
+                "stops_late": r.get("stops_late") or 0,
+                "avg_delay_min": r.get("avg_delay_min"),
+                "max_delay_min": r.get("max_delay_min"),
+            }
+        )
+        a = agg.setdefault(did, {"driver_id": did, "name": names.get(did), "trips": 0, "speeding": 0, "off_route": 0, "stops_total": 0, "stops_on_time": 0, "stops_late": 0})
+        a["trips"] += 1
+        a["speeding"] += r.get("speeding_count") or 0
+        a["off_route"] += r.get("off_route_count") or 0
+        a["stops_total"] += r.get("stops_total") or 0
+        a["stops_on_time"] += r.get("stops_on_time") or 0
+        a["stops_late"] += r.get("stops_late") or 0
+
+    supervisors = []
+    for a in agg.values():
+        tot = a["stops_total"]
+        a["on_time_pct"] = round(100 * a["stops_on_time"] / tot) if tot else None
+        supervisors.append(a)
+    supervisors.sort(key=lambda x: (x["name"] or "").lower())
+
+    return {"from": d_from.isoformat(), "to": d_to.isoformat(), "trips": trips, "supervisors": supervisors}

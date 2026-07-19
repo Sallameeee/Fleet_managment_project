@@ -6,7 +6,7 @@ route_stops.geog PostGIS point is set by a DB trigger from lat/lng, so we
 never send it.
 """
 
-from datetime import time
+from datetime import datetime, time, timezone
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -256,6 +256,8 @@ def update_route(
                     "est_minutes": body.est_minutes,
                     "start_time": body.start_time.isoformat() if body.start_time else None,
                     "color": body.color,
+                    # Bump on every edit so the app can detect route/stop changes.
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
                 }
             )
             .eq("id", route_id)

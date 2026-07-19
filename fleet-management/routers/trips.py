@@ -20,9 +20,12 @@ from pydantic import BaseModel, Field
 
 import notifications_logic as notify
 from auth import require_permission, require_role
+from capacity_logic import org_module
 from database import supabase
 
 router = APIRouter(prefix="/trips", tags=["trips"])
+
+SCHEDULE_GRACE_MIN = 5  # arrival within 5 min of the scheduled time counts as on-time
 
 # Geofence radius (meters) for auto arrival/departure detection. Named so it's
 # a one-line tune. A ping within this distance of a stop counts as "at" it.
@@ -389,7 +392,81 @@ def end_trip(
             detail=f"Could not end trip: {exc}",
         )
 
+    # School only, best-effort: compute + persist this trip's performance metrics.
+    _compute_trip_performance(upd.data[0])
     return _enrich_one(upd.data[0])
+
+
+def _compute_trip_performance(trip: dict) -> None:
+    """Compute + persist per-trip performance when a trip ends (SCHOOL only,
+    best-effort — never breaks trip-end). Reuses existing signals:
+      * speeding / off_route → counts of the `alerts` this trip already produced
+        (device speed vs the org's speeding rule; nearest-stop distance vs the
+        off_route rule — both configured in Alerts / alert_rules).
+      * schedule adherence → stop_events.arrived_at vs route_stops.arrival_time,
+        on-time within SCHEDULE_GRACE_MIN."""
+    try:
+        org_id = trip.get("org_id")
+        if not org_id or org_module(org_id) != "school":
+            return
+        trip_id = trip["id"]
+        route_id = trip.get("route_id")
+        trip_date = (trip.get("started_at") or "")[:10] or datetime.now(LOCAL_TZ).date().isoformat()
+
+        alerts = supabase.table("alerts").select("type").eq("trip_id", trip_id).execute().data
+        speeding = sum(1 for a in alerts if a.get("type") == "speeding")
+        off_route = sum(1 for a in alerts if a.get("type") == "off_route")
+
+        # Scheduled clock time per stop (route_stops.arrival_time = "HH:MM:SS").
+        sched = {}
+        if route_id:
+            for s in supabase.table("route_stops").select("id, arrival_time").eq("route_id", route_id).execute().data:
+                if s.get("arrival_time"):
+                    sched[s["id"]] = str(s["arrival_time"])
+        events = supabase.table("stop_events").select("stop_id, arrived_at").eq("trip_id", trip_id).execute().data
+        total = on_time = late = 0
+        delays = []
+        for ev in events:
+            sid, arr = ev.get("stop_id"), ev.get("arrived_at")
+            if sid not in sched or not arr:
+                continue
+            try:
+                dt = datetime.fromisoformat(str(arr).replace("Z", "+00:00"))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                loc = dt.astimezone(LOCAL_TZ)
+                parts = sched[sid].split(":")
+                sched_min = int(parts[0]) * 60 + int(parts[1])
+                delay = (loc.hour * 60 + loc.minute) - sched_min  # minutes; <0 = early
+            except Exception:
+                continue
+            total += 1
+            delays.append(delay)
+            if delay > SCHEDULE_GRACE_MIN:
+                late += 1
+            else:
+                on_time += 1
+
+        supabase.table("trip_performance").upsert(
+            {
+                "trip_id": trip_id,
+                "org_id": org_id,
+                "driver_id": trip.get("driver_id"),
+                "route_id": route_id,
+                "trip_date": trip_date,
+                "speeding_count": speeding,
+                "off_route_count": off_route,
+                "stops_total": total,
+                "stops_on_time": on_time,
+                "stops_late": late,
+                "avg_delay_min": round(sum(delays) / len(delays), 1) if delays else None,
+                "max_delay_min": max(delays) if delays else None,
+                "computed_at": datetime.now(timezone.utc).isoformat(),
+            },
+            on_conflict="trip_id",
+        ).execute()
+    except Exception:
+        pass  # metrics are best-effort; never fail trip-end
 
 
 def _load_own_active_trip(trip_id: str, current_user: dict) -> dict:
@@ -529,7 +606,7 @@ def route_map(
     org_id = current_user["org_id"]
     route = (
         supabase.table("routes")
-        .select("id, name, color, geometry")
+        .select("id, name, color, geometry, updated_at")
         .eq("id", route_id)
         .eq("org_id", org_id)  # the route must belong to the driver's org
         .limit(1)
@@ -552,13 +629,57 @@ def route_map(
         "name": r.get("name"),
         "color": r.get("color"),
         "geometry": r.get("geometry"),  # GeoJSON LineString, or null for older routes
+        "updated_at": r.get("updated_at"),  # bumps on any route/stop edit
         "stops": stops,
     }
+
+
+@router.get("/route-version/{route_id}")
+def route_version(route_id: str, current_user: dict = Depends(require_role("driver"))):
+    """Just the route's updated_at — a cheap poll the app uses to detect edits and
+    re-pull the full route only when it actually changed."""
+    org_id = current_user["org_id"]
+    r = supabase.table("routes").select("updated_at").eq("id", route_id).eq("org_id", org_id).limit(1).execute().data
+    if not r:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Route not found.")
+    return {"route_id": route_id, "updated_at": r[0].get("updated_at")}
 
 
 class AttendanceIn(BaseModel):
     student_id: str = Field(..., min_length=1)
     boarded: bool
+    drop_off_stop: Optional[str] = None  # afternoon: the stop the student got off at
+
+
+def _trip_session(trip: dict) -> str:
+    """The trip's SESSION for attendance: 'morning' (pickup) if it starts before
+    noon LOCAL time, else 'afternoon' (drop-off). Derived from the trip — no manual
+    step and no schema flag."""
+    started = trip.get("started_at")
+    try:
+        if started:
+            dt = datetime.fromisoformat(str(started).replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            hour = dt.astimezone(LOCAL_TZ).hour
+        else:
+            hour = datetime.now(LOCAL_TZ).hour
+    except Exception:
+        hour = datetime.now(LOCAL_TZ).hour
+    return "morning" if hour < 12 else "afternoon"
+
+
+def _resolve_trip_stop(route_id: str, value: Optional[str]) -> Optional[str]:
+    """Validate a drop-off stop NAME against the trip's route, returning its
+    canonical (DB) name. Empty/None → None; a name not on the route → 400."""
+    if not value or not value.strip():
+        return None
+    match = (
+        supabase.table("route_stops").select("name").eq("route_id", route_id).ilike("name", value.strip()).limit(1).execute().data
+    )
+    if not match:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"'{value.strip()}' is not a stop on this route.")
+    return match[0]["name"]
 
 
 @router.get("/{trip_id}/students")
@@ -572,39 +693,55 @@ def trip_students(trip_id: str, current_user: dict = Depends(require_role("drive
 
     students = (
         supabase.table("passengers")
-        .select("id, name, student_phone, parent_phone, grade, class_name")
+        .select("id, name, student_phone, parent_phone, grade, class_name, drop_off_stop")
         .eq("org_id", org_id)
         .eq("route_id", trip["route_id"])
         .execute()
         .data
     )
     ids = [s["id"] for s in students]
-    boarded = {}
+    att_by_student = {}
     if ids:
         att = (
             supabase.table("attendance")
-            .select("student_id, boarded")
+            .select("student_id, boarded, drop_off_stop")
             .eq("trip_id", trip_id)
             .in_("student_id", ids)
             .execute()
             .data
         )
-        boarded = {a["student_id"]: a["boarded"] for a in att}
+        att_by_student = {a["student_id"]: a for a in att}
 
-    out = [
-        {
-            "student_id": s["id"],
-            "name": s.get("name"),
-            "class_name": s.get("class_name"),
-            "grade": s.get("grade"),
-            "student_phone": s.get("student_phone"),
-            "parent_phone": s.get("parent_phone"),
-            "boarded": boarded.get(s["id"], False),
-        }
-        for s in students
-    ]
+    # The route's stops — the afternoon drop-off-stop picker chooses from these.
+    stops = (
+        supabase.table("route_stops").select("name, stop_order").eq("route_id", trip["route_id"]).order("stop_order", desc=False).execute().data
+    )
+    session = _trip_session(trip)
+
+    out = []
+    for s in students:
+        a = att_by_student.get(s["id"]) or {}
+        out.append(
+            {
+                "student_id": s["id"],
+                "name": s.get("name"),
+                "class_name": s.get("class_name"),
+                "grade": s.get("grade"),
+                "student_phone": s.get("student_phone"),
+                "parent_phone": s.get("parent_phone"),
+                "boarded": a.get("boarded", False),
+                # Afternoon: the recorded drop-off, else the student's usual stop to prefill.
+                "drop_off_stop": a.get("drop_off_stop") or s.get("drop_off_stop"),
+            }
+        )
     out.sort(key=lambda x: (x["name"] or "").lower())
-    return {"trip_id": trip_id, "count": len(out), "students": out}
+    return {
+        "trip_id": trip_id,
+        "count": len(out),
+        "session": session,
+        "route_stops": [st.get("name") for st in stops if st.get("name")],
+        "students": out,
+    }
 
 
 @router.post("/{trip_id}/attendance", status_code=status.HTTP_200_OK)
@@ -626,19 +763,24 @@ def record_attendance(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="That student is not in your organization.")
 
     trip_date = (trip.get("started_at") or "")[:10] or datetime.now(LOCAL_TZ).date().isoformat()
+    # Only the afternoon (drop-off) session records WHERE the student got off.
+    session = _trip_session(trip)
+    drop_off_stop = _resolve_trip_stop(trip["route_id"], body.drop_off_stop) if session == "afternoon" else None
     payload = {
         "org_id": org_id,  # from the trip, never the body
         "trip_id": trip_id,
         "student_id": body.student_id,
         "trip_date": trip_date,
         "boarded": body.boarded,
+        "session": session,
+        "drop_off_stop": drop_off_stop,
         "recorded_at": datetime.now(timezone.utc).isoformat(),
     }
     try:
         row = supabase.table("attendance").upsert(payload, on_conflict="trip_id,student_id").execute().data[0]
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Could not record attendance: {exc}")
-    return {"student_id": body.student_id, "boarded": row["boarded"], "trip_id": trip_id}
+    return {"student_id": body.student_id, "boarded": row["boarded"], "session": session, "drop_off_stop": row.get("drop_off_stop"), "trip_id": trip_id}
 
 
 @router.post("/{trip_id}/stop-visits", status_code=status.HTTP_200_OK)

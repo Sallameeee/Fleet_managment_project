@@ -2,9 +2,11 @@
 
 One set of endpoints serves BOTH audiences, scoped by the caller's role:
   * a PARENT (role='passenger') sees audience='parent' notes addressed to them;
-  * a MANAGER (any staff role) sees the org-wide audience='manager' notes.
-Drivers and University orgs get an empty list (never an error), so the bell can
-poll harmlessly everywhere.
+    read state is per-recipient on notifications.is_read.
+  * a MANAGER (any staff role) sees the org-wide audience='manager' notes; read
+    state is PER-MANAGER via the notification_reads receipt table (so one manager
+    reading does NOT clear it for the others).
+Drivers and University orgs get an empty list (never an error).
 """
 
 from fastapi import APIRouter, Depends
@@ -15,20 +17,32 @@ from database import supabase
 
 router = APIRouter(prefix="/notifications", tags=["notifications"])
 
+_MGR_SCAN_LIMIT = 500  # cap manager rows scanned for counting/mark-all
+
 
 def _enabled(user: dict) -> bool:
-    """Notifications exist only for school parents + school managers."""
     if org_module(user.get("org_id")) != "school":
         return False
     return user.get("role") != "driver"
 
 
-def _scope(query, user: dict):
-    """Pin a notifications query to the caller's own scope."""
-    q = query.eq("org_id", user["org_id"])
-    if user.get("role") == "passenger":
-        return q.eq("audience", "parent").eq("recipient_id", user["id"])
-    return q.eq("audience", "manager")  # org-wide for managers
+def _is_manager(user: dict) -> bool:
+    return user.get("role") != "passenger"  # any staff role (drivers excluded by _enabled)
+
+
+def _manager_read_ids(user_id: str, notif_ids: list) -> set:
+    """The subset of `notif_ids` this manager has already read (receipt rows)."""
+    if not notif_ids:
+        return set()
+    rr = (
+        supabase.table("notification_reads")
+        .select("notification_id")
+        .eq("user_id", user_id)
+        .in_("notification_id", notif_ids)
+        .execute()
+        .data
+    )
+    return {x["notification_id"] for x in rr}
 
 
 @router.get("")
@@ -36,14 +50,23 @@ def list_notifications(current_user: dict = Depends(get_current_user)):
     """The caller's notifications, UNREAD FIRST then newest, plus the unread count."""
     if not _enabled(current_user):
         return {"count": 0, "unread": 0, "notifications": []}
-    rows = (
-        _scope(supabase.table("notifications").select("*"), current_user)
-        .order("created_at", desc=True)
-        .limit(100)
-        .execute()
-        .data
-    )
-    rows.sort(key=lambda r: 1 if r.get("is_read") else 0)  # stable → unread first, newest within
+    org_id, uid = current_user["org_id"], current_user["id"]
+
+    if _is_manager(current_user):
+        rows = (
+            supabase.table("notifications").select("*").eq("org_id", org_id).eq("audience", "manager")
+            .order("created_at", desc=True).limit(100).execute().data
+        )
+        read_ids = _manager_read_ids(uid, [r["id"] for r in rows])
+        for r in rows:
+            r["is_read"] = r["id"] in read_ids  # per-manager read state
+    else:
+        rows = (
+            supabase.table("notifications").select("*").eq("org_id", org_id)
+            .eq("audience", "parent").eq("recipient_id", uid)
+            .order("created_at", desc=True).limit(100).execute().data
+        )
+    rows.sort(key=lambda r: 1 if r.get("is_read") else 0)  # stable → unread first
     unread = sum(1 for r in rows if not r.get("is_read"))
     return {"count": len(rows), "unread": unread, "notifications": rows}
 
@@ -52,29 +75,59 @@ def list_notifications(current_user: dict = Depends(get_current_user)):
 def unread_count(current_user: dict = Depends(get_current_user)):
     if not _enabled(current_user):
         return {"unread": 0}
-    rows = _scope(supabase.table("notifications").select("id"), current_user).eq("is_read", False).execute().data
+    org_id, uid = current_user["org_id"], current_user["id"]
+    if _is_manager(current_user):
+        ids = [
+            r["id"]
+            for r in supabase.table("notifications").select("id").eq("org_id", org_id).eq("audience", "manager")
+            .order("created_at", desc=True).limit(_MGR_SCAN_LIMIT).execute().data
+        ]
+        read_ids = _manager_read_ids(uid, ids)
+        return {"unread": sum(1 for i in ids if i not in read_ids)}
+    rows = (
+        supabase.table("notifications").select("id").eq("org_id", org_id)
+        .eq("audience", "parent").eq("recipient_id", uid).eq("is_read", False).execute().data
+    )
     return {"unread": len(rows)}
 
 
 @router.post("/{notification_id}/read")
 def mark_read(notification_id: str, current_user: dict = Depends(get_current_user)):
-    """Mark one notification read (only within the caller's own scope)."""
+    """Mark one notification read for THIS caller (per-manager receipt; per-parent
+    flag)."""
     if not _enabled(current_user):
         return {"id": notification_id, "is_read": True}
-    _scope(
-        supabase.table("notifications").update({"is_read": True}).eq("id", notification_id),
-        current_user,
-    ).execute()
+    org_id, uid = current_user["org_id"], current_user["id"]
+    if _is_manager(current_user):
+        # Only for a manager notification in this org.
+        n = supabase.table("notifications").select("id").eq("id", notification_id).eq("org_id", org_id).eq("audience", "manager").limit(1).execute().data
+        if n:
+            supabase.table("notification_reads").upsert(
+                {"notification_id": notification_id, "user_id": uid}, on_conflict="notification_id,user_id"
+            ).execute()
+    else:
+        supabase.table("notifications").update({"is_read": True}).eq("id", notification_id).eq("org_id", org_id).eq("audience", "parent").eq("recipient_id", uid).execute()
     return {"id": notification_id, "is_read": True}
 
 
 @router.post("/read-all")
 def mark_all_read(current_user: dict = Depends(get_current_user)):
-    """Mark all of the caller's notifications read."""
+    """Mark all of the caller's notifications read (per-manager / per-parent)."""
     if not _enabled(current_user):
         return {"updated": True}
-    _scope(
-        supabase.table("notifications").update({"is_read": True}).eq("is_read", False),
-        current_user,
-    ).execute()
+    org_id, uid = current_user["org_id"], current_user["id"]
+    if _is_manager(current_user):
+        ids = [
+            r["id"]
+            for r in supabase.table("notifications").select("id").eq("org_id", org_id).eq("audience", "manager")
+            .order("created_at", desc=True).limit(_MGR_SCAN_LIMIT).execute().data
+        ]
+        read_ids = _manager_read_ids(uid, ids)
+        missing = [i for i in ids if i not in read_ids]
+        if missing:
+            supabase.table("notification_reads").upsert(
+                [{"notification_id": i, "user_id": uid} for i in missing], on_conflict="notification_id,user_id"
+            ).execute()
+    else:
+        supabase.table("notifications").update({"is_read": True}).eq("org_id", org_id).eq("audience", "parent").eq("recipient_id", uid).eq("is_read", False).execute()
     return {"updated": True}

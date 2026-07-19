@@ -150,8 +150,8 @@ export default function ManagerBusDriversPage() {
         </div>
       )}
 
-      <div className="overflow-hidden rounded-xl border border-ink-800">
-        <table className="w-full text-left text-sm">
+      <div className="overflow-x-auto rounded-xl border border-ink-800">
+        <table className="w-full min-w-[760px] text-left text-sm">
           <thead className="bg-ink-900/70 text-xs uppercase tracking-wide text-slate-400">
             <tr>
               <th className="px-4 py-3">{t("common.name")}</th>

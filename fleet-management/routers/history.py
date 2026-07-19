@@ -19,11 +19,38 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from auth import require_permission
+from capacity_logic import org_module
 from database import supabase
 
 router = APIRouter(prefix="/history", tags=["history"])
 
 LOCAL_TZ = timezone(timedelta(hours=2))  # Egypt (UTC+2)
+
+
+def _local_hour(iso) -> int:
+    try:
+        dt = datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(LOCAL_TZ).hour
+    except Exception:
+        return 8
+
+
+def _derive_school_log(trip: dict, visits: list) -> dict:
+    """Trip-log times derived from the trip + stop visits (no manual entry):
+      * morning  → pickup_time (first stop arrival) + school_arrival_time (last
+        stop arrival, else trip end)
+      * afternoon → home_arrival_time (last stop arrival, else trip end)
+    Session is inferred from the trip's start hour (before noon local = morning)."""
+    started, ended = trip.get("started_at"), trip.get("ended_at")
+    session = "morning" if _local_hour(started) < 12 else "afternoon"
+    arrivals = sorted(v["arrival_time"] for v in visits if v.get("arrival_time"))
+    first = arrivals[0] if arrivals else None
+    last = arrivals[-1] if arrivals else None
+    if session == "morning":
+        return {"session": "morning", "pickup_time": first or started, "school_arrival_time": last or ended, "home_arrival_time": None}
+    return {"session": "afternoon", "pickup_time": started, "school_arrival_time": None, "home_arrival_time": last or ended}
 
 
 @router.get("")
@@ -139,9 +166,11 @@ def get_history(
     except Exception:
         pass  # no stop_visits table / query failed → history still returns trips+pings
 
+    is_school = org_module(org_id) == "school"
     out = []
     for t in trips:
         r = routes.get(t.get("route_id")) or {}
+        visits = visits_by_trip.get(t["id"], [])
         out.append(
             {
                 "trip_id": t["id"],
@@ -157,7 +186,9 @@ def get_history(
                 "started_at": t.get("started_at"),
                 "ended_at": t.get("ended_at"),
                 "pings": pings_by_trip.get(t["id"], []),
-                "stop_visits": visits_by_trip.get(t["id"], []),
+                "stop_visits": visits,
+                # School trip log: pickup / school-arrival / home-arrival, derived.
+                "school_log": _derive_school_log(t, visits) if is_school else None,
             }
         )
     # Group-friendly order: by driver name, then time.

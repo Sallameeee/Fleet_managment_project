@@ -10,6 +10,7 @@ import {
 import { useT } from "@/lib/i18n";
 import { useIsSchool } from "@/lib/module";
 import { useToast } from "@/lib/toast";
+import { useFocusHighlight } from "@/lib/useFocusHighlight";
 
 type Filter = "pending" | "approved" | "rejected" | "all";
 const FILTERS: Filter[] = ["pending", "approved", "rejected", "all"];
@@ -41,6 +42,12 @@ export default function ManagerProfileRequestsPage() {
   useEffect(() => {
     if (isSchool) load();
   }, [isSchool, load]);
+
+  // Jump to a specific request when arriving from a notification (?focus=<id>).
+  const { focus, highlight } = useFocusHighlight("pr-", !loading);
+  useEffect(() => {
+    if (focus) setFilter("all");
+  }, [focus]);
 
   async function decide(r: ManagerProfileRequest, action: "approve" | "reject") {
     setActioningId(r.id);
@@ -101,7 +108,9 @@ export default function ManagerProfileRequestsPage() {
 
       <div className="space-y-4">
         {rows.map((r) => (
-          <ProfileRequestCard key={r.id} r={r} actioning={actioningId === r.id} onApprove={() => decide(r, "approve")} onReject={() => decide(r, "reject")} />
+          <div key={r.id} id={"pr-" + r.id} className={highlight === r.id ? "rounded-xl ring-2 ring-brand ring-offset-2 ring-offset-ink-950" : ""}>
+            <ProfileRequestCard r={r} actioning={actioningId === r.id} onApprove={() => decide(r, "approve")} onReject={() => decide(r, "reject")} />
+          </div>
         ))}
       </div>
     </div>

@@ -1073,6 +1073,29 @@ export async function decideChangeRequest(
   throw new Error(msg);
 }
 
+// --- School manager directory ------------------------------------------------
+
+export interface DirectoryPerson {
+  id: string; // driver_id (supervisor) or bus_driver id
+  name: string | null;
+  phone: string | null;
+  route_name: string | null;
+  vehicle_bus_number: string | null;
+}
+
+export async function getSchoolDirectory(): Promise<{ supervisors: DirectoryPerson[]; bus_drivers: DirectoryPerson[] }> {
+  const res = await managerFetch("/school/directory");
+  if (!res.ok) throw new Error(await extractError(res, "Failed to load directory."));
+  const d = (await res.json()) as {
+    supervisors: (DirectoryPerson & { driver_id?: string })[];
+    bus_drivers: DirectoryPerson[];
+  };
+  return {
+    supervisors: (d.supervisors ?? []).map((s) => ({ ...s, id: s.driver_id ?? s.id })),
+    bus_drivers: d.bus_drivers ?? [],
+  };
+}
+
 // --- Notifications (School module) -------------------------------------------
 
 export interface ManagerNotification {
@@ -1130,6 +1153,70 @@ export async function listProfileRequests(status?: "pending" | "approved" | "rej
 export async function decideProfileRequest(id: string, action: "approve" | "reject"): Promise<void> {
   const res = await managerFetch(`/profile-requests/${id}/decision`, { method: "POST", body: JSON.stringify({ action }) });
   if (!res.ok) throw new Error(await extractError(res, "Could not update the request."));
+}
+
+// --- Performance monitoring (School module) ----------------------------------
+
+export interface PerfTrip {
+  trip_id: string;
+  trip_date: string | null;
+  driver_name: string | null;
+  route_name: string | null;
+  speeding_count: number;
+  off_route_count: number;
+  stops_total: number;
+  stops_on_time: number;
+  stops_late: number;
+  avg_delay_min: number | null;
+  max_delay_min: number | null;
+}
+
+export interface PerfSupervisor {
+  driver_id: string | null;
+  name: string | null;
+  trips: number;
+  speeding: number;
+  off_route: number;
+  stops_total: number;
+  stops_on_time: number;
+  stops_late: number;
+  on_time_pct: number | null;
+}
+
+export async function getPerformance(dateFrom?: string, dateTo?: string): Promise<{ from: string; to: string; trips: PerfTrip[]; supervisors: PerfSupervisor[] }> {
+  const params = new URLSearchParams();
+  if (dateFrom) params.set("date_from", dateFrom);
+  if (dateTo) params.set("date_to", dateTo);
+  const qs = params.toString();
+  const res = await managerFetch(`/school/performance${qs ? "?" + qs : ""}`);
+  if (!res.ok) throw new Error(await extractError(res, "Failed to load performance."));
+  return (await res.json()) as { from: string; to: string; trips: PerfTrip[]; supervisors: PerfSupervisor[] };
+}
+
+// --- Parent reports (School module) ------------------------------------------
+
+export interface ManagerReport {
+  id: string;
+  status: "open" | "resolved";
+  subject: string;
+  message: string;
+  parent_name: string | null;
+  parent_email: string | null;
+  student_name: string | null;
+  created_at: string | null;
+  resolved_at: string | null;
+}
+
+export async function listParentReports(status?: "open" | "resolved"): Promise<ManagerReport[]> {
+  const q = status ? `?status=${status}` : "";
+  const res = await managerFetch(`/parent-reports${q}`);
+  if (!res.ok) throw new Error(await extractError(res, "Failed to load reports."));
+  return (await res.json()).reports as ManagerReport[];
+}
+
+export async function resolveParentReport(id: string): Promise<void> {
+  const res = await managerFetch(`/parent-reports/${id}/resolve`, { method: "POST" });
+  if (!res.ok) throw new Error(await extractError(res, "Could not resolve the report."));
 }
 
 export const bulkCreateVehicles = (rows: Record<string, string>[]) => bulkImport("/vehicles/bulk", rows);
@@ -1215,6 +1302,13 @@ export interface HistoryTrip {
   ended_at: string | null;
   pings: HistoryPing[];
   stop_visits: HistoryStopVisit[];
+  // School trip log: pickup / school-arrival / home-arrival, derived server-side.
+  school_log?: {
+    session: "morning" | "afternoon";
+    pickup_time: string | null;
+    school_arrival_time: string | null;
+    home_arrival_time: string | null;
+  } | null;
 }
 
 export interface HistoryParams {

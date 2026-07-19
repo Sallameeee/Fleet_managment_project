@@ -27,12 +27,14 @@ COLUMN_LABELS = {
     "grade": "Grade",
     "route_name": "Route",
     "date": "Date",
+    "session": "Session",          # morning (pickup) / afternoon (drop-off)
     "boarded": "Boarded",
+    "drop_off_stop": "Drop-off stop",  # where the student got off (afternoon)
     "time": "Time",
     "parent_phone": "Parent phone",
     "student_phone": "Student phone",
 }
-DEFAULT_COLUMNS = ["student_name", "class_name", "grade", "route_name", "date", "boarded", "time"]
+DEFAULT_COLUMNS = ["student_name", "class_name", "route_name", "date", "session", "boarded", "drop_off_stop", "time"]
 
 
 def _require_school_org(org_id: str) -> None:
@@ -58,7 +60,7 @@ def _fetch_rows(
     date_to: Optional[date],
 ) -> list:
     """Enriched attendance rows (one per student per trip/day) for the filters."""
-    q = supabase.table("attendance").select("student_id, trip_date, boarded, recorded_at").eq("org_id", org_id)
+    q = supabase.table("attendance").select("student_id, trip_date, boarded, session, drop_off_stop, recorded_at").eq("org_id", org_id)
     if student_id:
         q = q.eq("student_id", student_id)
     if date_from:
@@ -97,7 +99,9 @@ def _fetch_rows(
                 "grade": p.get("grade"),
                 "route_name": routes.get(p.get("route_id")),
                 "date": a.get("trip_date"),
+                "session": (a.get("session") or "").capitalize() or None,
                 "boarded": "Yes" if a.get("boarded") else "No",
+                "drop_off_stop": a.get("drop_off_stop"),
                 "time": (a.get("recorded_at") or "")[11:16],
                 "parent_phone": p.get("parent_phone"),
                 "student_phone": p.get("student_phone"),
