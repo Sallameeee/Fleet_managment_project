@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
 from auth import require_permission
+from capacity_logic import require_school_org
 from database import supabase
 
 router = APIRouter(prefix="/passengers", tags=["passengers"])
@@ -322,6 +323,60 @@ def list_passengers(current_user: dict = Depends(require_permission("manage_pass
         )
     out.sort(key=lambda x: (x["name"] or "").lower())
     return {"count": len(out), "passengers": out}
+
+
+@router.get("/parents")
+def list_parents(current_user: dict = Depends(require_permission("manage_passengers"))):
+    """All PARENTS in the org (school module) with their linked CHILDREN. Read-only,
+    reusing the parent→students model: a parent is the profiles row that owns the
+    login; a child is a passengers row whose parent_id points at it. Grouped so a
+    parent with several children shows all of them."""
+    org_id = current_user["org_id"]
+    require_school_org(org_id)
+
+    students = (
+        supabase.table("passengers")
+        .select("id, name, grade, class_name, route_id, drop_off_stop, parent_id, parent_email, parent_phone")
+        .eq("org_id", org_id)
+        .execute()
+        .data
+    )
+    by_parent: dict = {}
+    for s in students:
+        pid = s.get("parent_id")
+        if pid:
+            by_parent.setdefault(pid, []).append(s)
+
+    parent_ids = list(by_parent.keys())
+    profs = {}
+    if parent_ids:
+        profs = {p["id"]: p for p in supabase.table("profiles").select("id, name, email, phone").in_("id", parent_ids).execute().data}
+    route_ids = list({s.get("route_id") for s in students if s.get("route_id")})
+    routes = {}
+    if route_ids:
+        routes = {r["id"]: r["name"] for r in supabase.table("routes").select("id, name").in_("id", route_ids).execute().data}
+
+    parents = []
+    for pid, kids in by_parent.items():
+        prof = profs.get(pid, {})
+        # Prefer the parent PROFILE's email/phone; fall back to a child's contact fields.
+        email = prof.get("email") or next((k.get("parent_email") for k in kids if k.get("parent_email")), None)
+        phone = prof.get("phone") or next((k.get("parent_phone") for k in kids if k.get("parent_phone")), None)
+        children = [
+            {
+                "id": k["id"],
+                "name": k.get("name"),
+                "grade": k.get("grade"),
+                "class_name": k.get("class_name"),
+                "route_name": routes.get(k.get("route_id")),
+                "drop_off_stop": k.get("drop_off_stop"),
+            }
+            for k in kids
+        ]
+        children.sort(key=lambda c: (c["name"] or "").lower())
+        parents.append({"id": pid, "name": prof.get("name"), "email": email, "phone": phone, "children": children})
+    parents.sort(key=lambda p: (p["name"] or p["email"] or "").lower())
+    return {"count": len(parents), "parents": parents}
 
 
 @router.patch("/{passenger_id}")

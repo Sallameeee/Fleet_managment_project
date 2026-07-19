@@ -916,6 +916,31 @@ export async function listPassengers(): Promise<ManagerPassenger[]> {
   return (await res.json()).passengers as ManagerPassenger[];
 }
 
+// --- Parents (School module — read-only view of parents + their children) -----
+
+export interface ParentChild {
+  id: string;
+  name: string | null;
+  grade: string | null;
+  class_name: string | null;
+  route_name: string | null;
+  drop_off_stop: string | null;
+}
+
+export interface ManagerParent {
+  id: string;
+  name: string | null;
+  email: string | null;
+  phone: string | null;
+  children: ParentChild[];
+}
+
+export async function listParents(): Promise<ManagerParent[]> {
+  const res = await managerFetch("/passengers/parents");
+  if (!res.ok) throw new Error(await extractError(res, "Failed to load parents."));
+  return (await res.json()).parents as ManagerParent[];
+}
+
 export async function createPassenger(input: CreatePassengerInput): Promise<PassengerCreateResult> {
   const res = await managerFetch("/passengers", { method: "POST", body: JSON.stringify(input) });
   if (!res.ok) throw new Error(await extractError(res, "Failed to create passenger."));
