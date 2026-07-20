@@ -7,6 +7,7 @@ from typing import Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
+import features as feature_flags
 from auth import (
     mint_impersonation_token,
     require_permission,
@@ -46,6 +47,8 @@ class OrganizationCreate(BaseModel):
     # Feature module. Defaults to 'university' so behaviour is unchanged for
     # every existing org / any caller that omits it.
     module: Literal["university", "school"] = "university"
+    # Enabled TOGGLEABLE feature keys (core is always on). Omit/empty → core-only.
+    enabled_features: Optional[list[str]] = None
     max_devices: int = 10
     monthly_fee: float = 0
     subscription_expiry: Optional[date] = None
@@ -54,6 +57,7 @@ class OrganizationCreate(BaseModel):
 class OrgUpdate(BaseModel):
     plan: Optional[Literal["basic", "pro", "enterprise"]] = None
     module: Optional[Literal["university", "school"]] = None
+    enabled_features: Optional[list[str]] = None
     max_devices: Optional[int] = None
     monthly_fee: Optional[float] = None
     subscription_expiry: Optional[date] = None
@@ -251,6 +255,9 @@ def create_organization(
             "status": "active",
             "plan": body.plan,
             "module": body.module,
+            # Explicit enabled set (core-only unless the admin enabled extras),
+            # validated + module-scoped so no cross-module key can be stored.
+            "enabled_features": feature_flags.sanitize_enabled(body.module, body.enabled_features or []),
             "max_devices": body.max_devices,
             "monthly_fee": body.monthly_fee,
             "subscription_expiry": (
@@ -337,6 +344,14 @@ def _load_org_or_404(org_id: str) -> dict:
     return res.data[0]
 
 
+@router.get("/feature-catalog/{module}")
+def feature_catalog(module: str, _admin: dict = Depends(require_super_admin)):
+    """The toggle catalog for a module — core (locked-on) + toggleable features,
+    each with key + label. Strictly module-scoped (school/university never mix).
+    Used by the super-admin org create/edit form to render the feature toggles."""
+    return feature_flags.catalog(module)
+
+
 @router.get("/{org_id}")
 def get_organization(org_id: str, _admin: dict = Depends(require_super_admin)):
     """Full detail of one org: its fields, profiles, vehicles, and counts."""
@@ -380,6 +395,19 @@ def update_organization(
 
     if not fields:
         return _load_org_or_404(org_id)
+
+    # Feature-flag rules (kept strictly module-scoped):
+    #   * If the MODULE changes → RESET enabled_features to core-only for the new
+    #     module, so a school flag can never linger on a now-university org (unless
+    #     the admin also sent an explicit set in the same request).
+    #   * Any provided enabled_features is sanitized against the effective module.
+    current = _load_org_or_404(org_id)
+    new_module = fields.get("module") or current.get("module") or "university"
+    module_changed = "module" in fields and fields["module"] != current.get("module")
+    if "enabled_features" in fields:
+        fields["enabled_features"] = feature_flags.sanitize_enabled(new_module, fields["enabled_features"] or [])
+    elif module_changed:
+        fields["enabled_features"] = []  # reset to core-only on a module switch
 
     try:
         res = (

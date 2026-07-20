@@ -13,6 +13,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
+import features as feature_flags
 from auth import get_current_user, require_super_admin
 from database import SUPABASE_URL, supabase
 
@@ -141,6 +142,8 @@ def login(body: LoginRequest):
         )
 
     data = resp.json()
+    # Org module + enabled features so the app (driver/supervisor) can gate UI.
+    org_module, enabled_features = feature_flags.module_and_enabled(profile.get("org_id"))
     return {
         "access_token": data.get("access_token"),
         "token_type": data.get("token_type", "bearer"),
@@ -150,8 +153,12 @@ def login(body: LoginRequest):
             "name": profile.get("name"),
             "role": profile.get("role"),
             "org_id": profile.get("org_id"),
+            "module": org_module,
+            "enabled_features": enabled_features,
             "permissions": profile.get("permissions"),
         },
+        "module": org_module,
+        "enabled_features": enabled_features,
     }
 
 
@@ -164,15 +171,10 @@ def me(current_user: dict = Depends(get_current_user)):
     # Surface the org's feature module so the dashboard can relabel/gate features
     # (e.g. "Drivers" → "Supervisors" in school orgs). Best-effort; defaults to
     # 'university' so behaviour is unchanged if the lookup fails or is unset.
-    org_module = "university"
-    try:
-        _oid = current_user.get("org_id")
-        if _oid:
-            _o = supabase.table("organizations").select("module").eq("id", _oid).limit(1).execute()
-            if _o.data and _o.data[0].get("module"):
-                org_module = _o.data[0]["module"]
-    except Exception:
-        pass
+    org_module, enabled_features = "university", []
+    _oid = current_user.get("org_id")
+    if _oid:
+        org_module, enabled_features = feature_flags.module_and_enabled(_oid)
 
     return {
         "id": current_user.get("id"),
@@ -183,6 +185,8 @@ def me(current_user: dict = Depends(get_current_user)):
         "role": current_user.get("role"),
         "org_id": current_user.get("org_id"),
         "module": org_module,
+        # The org's ENABLED features (core + toggleable) so the dashboard/app gate UI.
+        "enabled_features": enabled_features,
         "permissions": current_user.get("permissions"),
         "is_active": current_user.get("is_active"),
         "created_at": current_user.get("created_at"),
@@ -245,19 +249,14 @@ def passenger_login(body: PassengerLoginRequest):
     # Surface the org's module so the passenger app knows which view to show:
     # 'school' -> the account is a PARENT (tracks children); 'university' -> a
     # STUDENT (tracks themselves). Defaults to 'university'.
-    org_module = "university"
-    try:
-        _o = supabase.table("organizations").select("module").eq("id", profile.get("org_id")).limit(1).execute()
-        if _o.data and _o.data[0].get("module"):
-            org_module = _o.data[0]["module"]
-    except Exception:
-        pass
+    org_module, enabled_features = feature_flags.module_and_enabled(profile.get("org_id"))
     return {
         "access_token": data.get("access_token"),
         "token_type": data.get("token_type", "bearer"),
         "expires_in": data.get("expires_in"),
         "user": {"id": profile["id"], "name": profile.get("name"), "role": "passenger", "org_id": profile.get("org_id")},
         "module": org_module,
+        "enabled_features": enabled_features,
         "must_change_password": bool(profile.get("must_change_password")),
     }
 

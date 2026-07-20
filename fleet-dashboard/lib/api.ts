@@ -149,11 +149,29 @@ export interface Organization {
   status: string;
   plan: string;
   module?: string; // 'university' (default) | 'school'
+  enabled_features?: string[] | null; // toggleable keys enabled; null = legacy (all-on)
   max_devices: number;
   monthly_fee: number;
   subscription_expiry: string | null;
   created_at: string;
   counts?: OrgCounts;
+}
+
+// Feature toggle catalog for a module (strictly module-scoped: school/uni never mix).
+export interface FeatureItem {
+  key: string;
+  label: string;
+}
+export interface FeatureCatalog {
+  module: string;
+  core: FeatureItem[]; // always-on, shown locked
+  toggleable: FeatureItem[];
+}
+
+export async function getFeatureCatalog(module: "university" | "school"): Promise<FeatureCatalog> {
+  const res = await apiFetch(`/organizations/feature-catalog/${module}`);
+  if (!res.ok) throw new Error(await extractError(res, "Failed to load feature catalog."));
+  return (await res.json()) as FeatureCatalog;
 }
 
 export async function listOrganizations(): Promise<Organization[]> {
@@ -172,6 +190,7 @@ export interface CreateOrgInput {
   phone?: string;
   plan: "basic" | "pro" | "enterprise";
   module: "university" | "school";
+  enabled_features?: string[]; // toggleable keys to enable (core is implicit)
   max_devices: number;
   monthly_fee: number;
   subscription_expiry?: string | null;
@@ -231,6 +250,7 @@ export async function getOrganization(id: string): Promise<OrganizationDetail> {
 export interface OrgPatch {
   plan?: "basic" | "pro" | "enterprise";
   module?: "university" | "school";
+  enabled_features?: string[];
   max_devices?: number;
   monthly_fee?: number;
   subscription_expiry?: string | null;

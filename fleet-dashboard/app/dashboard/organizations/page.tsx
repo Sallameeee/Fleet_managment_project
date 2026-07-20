@@ -15,6 +15,7 @@ import {
 import { startImpersonation } from "@/lib/manager";
 import { useT } from "@/lib/i18n";
 import Button from "@/components/Button";
+import FeatureToggles from "@/components/FeatureToggles";
 import Input from "@/components/Input";
 import Modal from "@/components/Modal";
 import StatusBadge from "@/components/StatusBadge";
@@ -28,6 +29,7 @@ const EMPTY_FORM = {
   phone: "",
   plan: "basic",
   module: "university",
+  enabled_features: [] as string[],
   max_devices: "10",
   monthly_fee: "0",
   subscription_expiry: "",
@@ -103,6 +105,7 @@ export default function OrganizationsPage() {
         password: form.password,
         plan: form.plan as CreateOrgInput["plan"],
         module: form.module as CreateOrgInput["module"],
+        enabled_features: form.enabled_features,
         max_devices: Number(form.max_devices) || 0,
         monthly_fee: Number(form.monthly_fee) || 0,
       };
@@ -337,11 +340,16 @@ export default function OrganizationsPage() {
             <Input label={t("common.address")} value={form.address} onChange={(e) => update("address", e.target.value)} />
             <label className="block">
               <span className="mb-1.5 block text-sm font-medium text-slate-300">{t("orgs.module")}</span>
-              <select value={form.module} onChange={(e) => update("module", e.target.value)} className="w-full rounded-lg border border-ink-700 bg-ink-850 px-3 py-2.5 text-slate-100 focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/40">
+              {/* Switching the module RESETS the feature selection (core-only for the new module). */}
+              <select value={form.module} onChange={(e) => setForm((f) => ({ ...f, module: e.target.value, enabled_features: [] }))} className="w-full rounded-lg border border-ink-700 bg-ink-850 px-3 py-2.5 text-slate-100 focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/40">
                 <option value="university">{t("orgs.moduleUniversity")}</option>
                 <option value="school">{t("orgs.moduleSchool")}</option>
               </select>
             </label>
+            <div>
+              <span className="mb-1.5 block text-sm font-medium text-slate-300">{t("orgs.features")}</span>
+              <FeatureToggles module={form.module as "university" | "school"} value={form.enabled_features} onChange={(keys) => setForm((f) => ({ ...f, enabled_features: keys }))} />
+            </div>
             <div className="grid grid-cols-3 gap-3">
               <label className="block">
                 <span className="mb-1.5 block text-sm font-medium text-slate-300">{t("orgs.plan")}</span>

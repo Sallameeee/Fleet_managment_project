@@ -1,6 +1,7 @@
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from features import require_feature
 from routers import (
     admin,
     alert_rules,
@@ -54,7 +55,10 @@ app.add_middleware(
 app.include_router(auth.router)
 app.include_router(organizations.router)
 app.include_router(drivers.router)
-app.include_router(bus_drivers.router)
+# FEATURE-GATED routers: a disabled feature's endpoints 403 for that org (legacy
+# orgs have everything on, so nothing existing breaks). Applied at include-time so
+# each cleanly-mapped router is gated in ONE place. Mixed routers (school,
+# passenger, passengers/parents) are gated per-endpoint inside the router.
 app.include_router(driver_groups.router)
 app.include_router(centers.router)
 app.include_router(vehicles.router)
@@ -63,7 +67,7 @@ app.include_router(routes.router)
 app.include_router(assignments.router)
 app.include_router(trips.router)
 app.include_router(alert_rules.router)
-app.include_router(alerts.router)
+app.include_router(alerts.router, dependencies=[Depends(require_feature("alerts"))])
 app.include_router(reports.router)
 app.include_router(report_schedules.router)
 app.include_router(tracking.router)
@@ -72,16 +76,17 @@ app.include_router(admin.router)
 app.include_router(dashboard.router)
 app.include_router(live.router)
 app.include_router(history.router)
-app.include_router(passengers.router)
+app.include_router(bus_drivers.router, dependencies=[Depends(require_feature("bus_drivers"))])
+app.include_router(passengers.router, dependencies=[Depends(require_feature("passengers"))])
 app.include_router(passenger.router)
-app.include_router(attendance.router)
-app.include_router(capacity.router)
-app.include_router(change_requests.router)
+app.include_router(attendance.router, dependencies=[Depends(require_feature("attendance"))])
+app.include_router(capacity.router, dependencies=[Depends(require_feature("capacity"))])
+app.include_router(change_requests.router, dependencies=[Depends(require_feature("change_requests"))])
 app.include_router(school.router)
-app.include_router(notifications.router)
-app.include_router(profile_requests.router)
-app.include_router(logs.router)
-app.include_router(parent_reports.router)
+app.include_router(notifications.router, dependencies=[Depends(require_feature("notifications"))])
+app.include_router(profile_requests.router, dependencies=[Depends(require_feature("profile_requests"))])
+app.include_router(logs.router, dependencies=[Depends(require_feature("logs"))])
+app.include_router(parent_reports.router, dependencies=[Depends(require_feature("reports"))])
 
 
 @app.get("/")

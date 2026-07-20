@@ -631,6 +631,7 @@ export const dict: Record<string, { en: string; ar: string }> = {
   "orgs.newOrg": { en: "New organization", ar: "مؤسسة جديدة" },
   "orgs.plan": { en: "Plan", ar: "الخطة" },
   "orgs.module": { en: "Module", ar: "الوحدة" },
+  "orgs.features": { en: "Features", ar: "الميزات" },
   "orgs.moduleUniversity": { en: "University", ar: "جامعة" },
   "orgs.moduleSchool": { en: "School", ar: "مدرسة" },
   "orgs.monthlyFee": { en: "Monthly fee", ar: "الرسوم الشهرية" },

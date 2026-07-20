@@ -19,36 +19,29 @@ import ThemeToggle from "@/components/ThemeToggle";
 import LanguageSwitcher from "@/components/LanguageSwitcher";
 import NotificationBell from "@/components/NotificationBell";
 
-// Each nav item: href, translation key for the label, required permission.
-const MANAGER_NAV: { href: string; key: string; perm?: string; group: string; schoolOnly?: boolean }[] = [
+// Each nav item: href, translation key, required permission, and — for TOGGLEABLE
+// features — a `feature` key. Items with no `feature` are CORE (always shown when
+// the permission passes). `schoolOnly` is kept as belt-and-suspenders alongside the
+// feature gate (a school feature can never surface for a university org either way).
+const MANAGER_NAV: { href: string; key: string; perm?: string; group: string; schoolOnly?: boolean; feature?: string }[] = [
   { href: "/manager", key: "nav.dashboard", group: "nav.grpMonitoring" },
   { href: "/manager/full-view", key: "nav.fullView", perm: "view_tracking", group: "nav.grpMonitoring" },
   { href: "/manager/history", key: "nav.history", perm: "view_tracking", group: "nav.grpMonitoring" },
-  // School-only: driver/supervisor performance monitoring.
-  { href: "/manager/performance", key: "nav.performance", perm: "view_tracking", group: "nav.grpMonitoring", schoolOnly: true },
-  // School-only: driver events feed (reuses the alerts detection engine).
-  { href: "/manager/logs", key: "nav.logs", perm: "view_tracking", group: "nav.grpMonitoring", schoolOnly: true },
+  { href: "/manager/performance", key: "nav.performance", perm: "view_tracking", group: "nav.grpMonitoring", schoolOnly: true, feature: "performance" },
+  { href: "/manager/logs", key: "nav.logs", perm: "view_tracking", group: "nav.grpMonitoring", schoolOnly: true, feature: "logs" },
   { href: "/manager/drivers", key: "nav.drivers", perm: "manage_drivers", group: "nav.grpManagement" },
-  // School-only: bus drivers (data-only). University orgs never see this.
-  { href: "/manager/bus-drivers", key: "nav.busDrivers", perm: "manage_drivers", group: "nav.grpManagement", schoolOnly: true },
-  // School-only: supervisors + drivers directory with phone + today's route/bus.
-  { href: "/manager/directory", key: "nav.directory", perm: "manage_drivers", group: "nav.grpManagement", schoolOnly: true },
+  { href: "/manager/bus-drivers", key: "nav.busDrivers", perm: "manage_drivers", group: "nav.grpManagement", schoolOnly: true, feature: "bus_drivers" },
+  { href: "/manager/directory", key: "nav.directory", perm: "manage_drivers", group: "nav.grpManagement", schoolOnly: true, feature: "directory" },
   { href: "/manager/vehicles", key: "nav.vehicles", perm: "manage_vehicles", group: "nav.grpManagement" },
   { href: "/manager/routes", key: "nav.routes", perm: "manage_routes", group: "nav.grpManagement" },
   { href: "/manager/assignments", key: "nav.assignments", perm: "manage_trips", group: "nav.grpManagement" },
-  { href: "/manager/passengers", key: "nav.passengers", perm: "manage_passengers", group: "nav.grpManagement" },
-  // School-only: parents + their linked children (read-only view).
-  { href: "/manager/parents", key: "nav.parents", perm: "manage_passengers", group: "nav.grpManagement", schoolOnly: true },
-  { href: "/manager/alerts", key: "nav.alerts", perm: "manage_trips", group: "nav.grpOperations" },
-  // School-only: parent bus-change requests to approve/reject. University never sees this.
-  { href: "/manager/change-requests", key: "nav.changeRequests", perm: "manage_passengers", group: "nav.grpOperations", schoolOnly: true },
-  // School-only: parent profile-edit requests to approve/reject.
-  { href: "/manager/profile-requests", key: "nav.profileRequests", perm: "manage_passengers", group: "nav.grpOperations", schoolOnly: true },
-  // School-only: issues parents reported.
-  // Reports serve BOTH modules (school parents + university students report to the manager).
-  { href: "/manager/parent-reports", key: "nav.parentReports", perm: "manage_passengers", group: "nav.grpOperations" },
-  // School-only: student attendance reports (manager). University never sees this.
-  { href: "/manager/attendance", key: "nav.attendance", perm: "manage_passengers", group: "nav.grpOperations", schoolOnly: true },
+  { href: "/manager/passengers", key: "nav.passengers", perm: "manage_passengers", group: "nav.grpManagement", feature: "passengers" },
+  { href: "/manager/parents", key: "nav.parents", perm: "manage_passengers", group: "nav.grpManagement", schoolOnly: true, feature: "parents_page" },
+  { href: "/manager/alerts", key: "nav.alerts", perm: "manage_trips", group: "nav.grpOperations", feature: "alerts" },
+  { href: "/manager/change-requests", key: "nav.changeRequests", perm: "manage_passengers", group: "nav.grpOperations", schoolOnly: true, feature: "change_requests" },
+  { href: "/manager/profile-requests", key: "nav.profileRequests", perm: "manage_passengers", group: "nav.grpOperations", schoolOnly: true, feature: "profile_requests" },
+  { href: "/manager/parent-reports", key: "nav.parentReports", perm: "manage_passengers", group: "nav.grpOperations", feature: "reports" },
+  { href: "/manager/attendance", key: "nav.attendance", perm: "manage_passengers", group: "nav.grpOperations", schoolOnly: true, feature: "attendance" },
   { href: "/manager/reports", key: "nav.reports", perm: "view_reports", group: "nav.grpOperations" },
   { href: "/manager/settings", key: "nav.settings", perm: "manage_settings", group: "nav.grpOperations" },
 ];
@@ -102,8 +95,13 @@ export default function ManagerLayout({ children }: { children: React.ReactNode 
   const module = profile.module ?? "university";
   const isSchool = module === "school";
 
+  // Enabled feature gate. undefined (old backend / not yet deployed) → all-on, so
+  // the nav never silently loses items before the flags feature is live.
+  const enabled = profile.enabled_features;
+  const featureOn = (f?: string) => !f || !enabled || enabled.includes(f);
+
   const items: NavItem[] = MANAGER_NAV.filter(
-    (n) => (!n.perm || canAccess(profile, n.perm)) && (!n.schoolOnly || isSchool),
+    (n) => (!n.perm || canAccess(profile, n.perm)) && (!n.schoolOnly || isSchool) && featureOn(n.feature),
   ).map((n) => ({
     href: n.href,
     // School orgs reuse the SAME systems, just relabelled.

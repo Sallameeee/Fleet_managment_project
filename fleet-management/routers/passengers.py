@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 from auth import require_permission
 from capacity_logic import require_school_org
 from database import supabase
+from features import require_feature
 
 router = APIRouter(prefix="/passengers", tags=["passengers"])
 log = logging.getLogger("passengers")
@@ -325,7 +326,7 @@ def list_passengers(current_user: dict = Depends(require_permission("manage_pass
     return {"count": len(out), "passengers": out}
 
 
-@router.get("/parents")
+@router.get("/parents", dependencies=[Depends(require_feature("parents_page"))])
 def list_parents(current_user: dict = Depends(require_permission("manage_passengers"))):
     """All PARENTS in the org (school module) with their linked CHILDREN. Read-only,
     reusing the parent→students model: a parent is the profiles row that owns the

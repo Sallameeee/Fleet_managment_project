@@ -78,6 +78,9 @@ export interface ManagerProfile {
   role: string;
   org_id: string;
   module?: string; // 'university' (default) | 'school' — drives feature relabels
+  // The org's ENABLED feature keys (core + toggleable). undefined = treat as all-on
+  // (backward compat before the flags backend is deployed). Gates nav + pages.
+  enabled_features?: string[];
   permissions: Permissions | null;
 }
 

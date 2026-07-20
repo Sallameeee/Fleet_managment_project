@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 from auth import require_permission
 from capacity_logic import require_school_org
 from database import supabase
+from features import require_feature
 from live_logic import LOCAL_TZ, driver_live_positions, pick_current_assignment
 
 router = APIRouter(prefix="/school", tags=["school"])
@@ -64,7 +65,7 @@ def update_school_settings(
     return {"change_cutoff_time": value}
 
 
-@router.get("/buses-live")
+@router.get("/buses-live", dependencies=[Depends(require_feature("buses_map"))])
 def buses_live(current_user: dict = Depends(require_permission("view_tracking"))):
     """Every bus's current live location in the org — for a map of all buses.
     Reuses the SAME computation as the manager Full View (live_logic), no
@@ -75,7 +76,7 @@ def buses_live(current_user: dict = Depends(require_permission("view_tracking"))
     return {"count": len(out), "buses": out}
 
 
-@router.get("/directory")
+@router.get("/directory", dependencies=[Depends(require_feature("directory"))])
 def directory(current_user: dict = Depends(require_permission("manage_drivers"))):
     """All supervisors (the app users) and bus drivers (data-only) with phone
     numbers, plus the route and bus each is on TODAY (from today's assignments)."""
@@ -135,7 +136,7 @@ def directory(current_user: dict = Depends(require_permission("manage_drivers"))
     return {"supervisors": supervisors, "bus_drivers": bus_drivers}
 
 
-@router.get("/performance")
+@router.get("/performance", dependencies=[Depends(require_feature("performance"))])
 def performance(
     current_user: dict = Depends(require_permission("view_tracking")),
     date_from: Optional[date] = Query(None),

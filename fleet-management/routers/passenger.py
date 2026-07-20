@@ -16,6 +16,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from auth import require_role
 from capacity_logic import earliest_request_date, read_cutoff, require_school_org, require_university_org
 from database import supabase
+from features import require_feature
 from live_logic import LOCAL_TZ, driver_live_positions, pick_current_assignment
 
 router = APIRouter(prefix="/passenger", tags=["passenger"])
@@ -61,7 +62,7 @@ def my_children(current_user: dict = Depends(require_role("passenger"))):
     return {"count": len(out), "children": out}
 
 
-@router.get("/change-options")
+@router.get("/change-options", dependencies=[Depends(require_feature("change_requests"))])
 def change_options(current_user: dict = Depends(require_role("passenger"))):
     """Everything the parent's "request a bus change" form needs, in one call:
       * the org's routes, each with its ordered stops (for the searchable route
@@ -113,7 +114,7 @@ def change_options(current_user: dict = Depends(require_role("passenger"))):
     }
 
 
-@router.get("/change-requests")
+@router.get("/change-requests", dependencies=[Depends(require_feature("change_requests"))])
 def my_change_requests(current_user: dict = Depends(require_role("passenger"))):
     """The signed-in PARENT's own change requests (all statuses), newest first —
     so the parent can see pending / approved / rejected. School orgs only."""

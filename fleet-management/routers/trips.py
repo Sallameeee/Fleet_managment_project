@@ -18,6 +18,7 @@ from typing import List, Optional, Union
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
+import features as feature_flags
 import notifications_logic as notify
 from auth import require_permission, require_role
 from capacity_logic import org_module
@@ -196,7 +197,13 @@ def my_assignments(current_user: dict = Depends(require_role("driver"))):
 
     # `module` lets the app show the school-only attendance feature (and never for
     # University drivers).
-    return {"date": today, "module": _org_module(org_id), "assignments": assignments, "active_trip": active_trip}
+    return {
+        "date": today,
+        "module": _org_module(org_id),
+        "enabled_features": sorted(feature_flags.org_enabled_features(org_id)),
+        "assignments": assignments,
+        "active_trip": active_trip,
+    }
 
 
 @router.post("/start", status_code=status.HTTP_201_CREATED)
