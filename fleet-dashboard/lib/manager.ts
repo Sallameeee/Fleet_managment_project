@@ -6,6 +6,7 @@
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
 const TOKEN_KEY = "fleet_manager_token";
+const REFRESH_KEY = "fleet_manager_refresh"; // Supabase refresh token → silent renewal
 const SLUG_KEY = "fleet_manager_slug";
 const IMP_KEY = "fleet_manager_impersonation";
 
@@ -24,10 +25,21 @@ export function managerSetToken(token: string): void {
   if (typeof window !== "undefined") window.localStorage.setItem(TOKEN_KEY, token);
 }
 
+function managerGetRefresh(): string | null {
+  if (typeof window === "undefined") return null;
+  return window.localStorage.getItem(REFRESH_KEY);
+}
+
+function managerSetRefresh(token: string | null | undefined): void {
+  if (typeof window === "undefined") return;
+  if (token) window.localStorage.setItem(REFRESH_KEY, token);
+}
+
 export function managerClearToken(): void {
   inMemoryToken = null;
   if (typeof window !== "undefined") {
     window.localStorage.removeItem(TOKEN_KEY);
+    window.localStorage.removeItem(REFRESH_KEY);
     window.localStorage.removeItem(SLUG_KEY);
     window.localStorage.removeItem(IMP_KEY);
   }
@@ -86,6 +98,7 @@ export interface ManagerProfile {
 
 interface LoginResponse {
   access_token: string;
+  refresh_token?: string;
   token_type: string;
   expires_in?: number;
   user: {
@@ -119,17 +132,58 @@ export async function managerLogin(username: string, slug: string, password: str
   if (!res.ok) throw new Error(await extractError(res, "Login failed. Check your credentials."));
   const data = (await res.json()) as LoginResponse;
   managerSetToken(data.access_token);
+  managerSetRefresh(data.refresh_token);
   if (typeof window !== "undefined") window.localStorage.setItem(SLUG_KEY, cleanSlug);
   return data.user;
 }
 
-/** fetch() wrapper that attaches the MANAGER Bearer token. */
+// Silent renewal: when the short-lived access token expires, exchange the refresh
+// token for a fresh one instead of bouncing the manager to the login screen.
+// SINGLE-FLIGHT so concurrent 401s share one refresh (Supabase rotates the refresh
+// token, so we must not run two exchanges at once). Returns true on success.
+let refreshInFlight: Promise<boolean> | null = null;
+
+async function managerRefresh(): Promise<boolean> {
+  const rt = managerGetRefresh();
+  if (!rt) return false; // impersonation / legacy session — nothing to renew
+  refreshInFlight ??= (async () => {
+    try {
+      const res = await fetch(`${API_URL}/auth/refresh`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ refresh_token: managerGetRefresh() }),
+      });
+      if (!res.ok) return false; // 401/403/503 → keep the session, let the caller decide
+      const data = (await res.json()) as { access_token?: string; refresh_token?: string };
+      if (!data.access_token) return false;
+      managerSetToken(data.access_token);
+      managerSetRefresh(data.refresh_token); // store the ROTATED token
+      return true;
+    } catch {
+      return false; // network blip — keep the session, try again later
+    } finally {
+      refreshInFlight = null;
+    }
+  })();
+  return refreshInFlight;
+}
+
+/** fetch() wrapper that attaches the MANAGER Bearer token. On a 401 (expired
+ *  token) it silently renews via the refresh token and retries ONCE, so the
+ *  manager is never dropped to the login screen just because the token aged out. */
 export async function managerFetch(path: string, options: RequestInit = {}): Promise<Response> {
-  const token = managerGetToken();
-  const headers = new Headers(options.headers);
-  if (token) headers.set("Authorization", `Bearer ${token}`);
-  if (options.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
-  return fetch(`${API_URL}${path}`, { ...options, headers });
+  const send = () => {
+    const headers = new Headers(options.headers);
+    const token = managerGetToken();
+    if (token) headers.set("Authorization", `Bearer ${token}`);
+    if (options.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
+    return fetch(`${API_URL}${path}`, { ...options, headers });
+  };
+  let res = await send();
+  if (res.status === 401 && (await managerRefresh())) {
+    res = await send();
+  }
+  return res;
 }
 
 /** Server-verified guard: GET /auth/me. Throws on 401 so callers can redirect. */

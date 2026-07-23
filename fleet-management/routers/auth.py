@@ -146,6 +146,9 @@ def login(body: LoginRequest):
     org_module, enabled_features = feature_flags.module_and_enabled(profile.get("org_id"))
     return {
         "access_token": data.get("access_token"),
+        # The refresh token lets the client RENEW an expired access token silently
+        # (POST /auth/refresh) so a session never has to drop the user.
+        "refresh_token": data.get("refresh_token"),
         "token_type": data.get("token_type", "bearer"),
         "expires_in": data.get("expires_in"),
         "user": {
@@ -252,12 +255,67 @@ def passenger_login(body: PassengerLoginRequest):
     org_module, enabled_features = feature_flags.module_and_enabled(profile.get("org_id"))
     return {
         "access_token": data.get("access_token"),
+        "refresh_token": data.get("refresh_token"),  # for silent renewal (POST /auth/refresh)
         "token_type": data.get("token_type", "bearer"),
         "expires_in": data.get("expires_in"),
         "user": {"id": profile["id"], "name": profile.get("name"), "role": "passenger", "org_id": profile.get("org_id")},
         "module": org_module,
         "enabled_features": enabled_features,
         "must_change_password": bool(profile.get("must_change_password")),
+    }
+
+
+class RefreshRequest(BaseModel):
+    refresh_token: str = Field(..., min_length=1)
+
+
+@router.post("/refresh", tags=["auth"])
+def refresh_token(body: RefreshRequest):
+    """Exchange a refresh token for a FRESH access token (+ a rotated refresh
+    token). This is what keeps a session alive indefinitely: when the short-lived
+    access token expires, the client calls this instead of ever forcing a
+    re-login. Works for every org user AND passenger (Supabase issues one refresh
+    token per session regardless of login route).
+
+    Supabase rotates refresh tokens: each successful refresh returns a NEW refresh
+    token and invalidates the one just used, so the client MUST store the returned
+    refresh token. A blocked account is cut off here too (403) so a deactivated
+    user can't keep renewing.
+    """
+    try:
+        resp = httpx.post(
+            f"{SUPABASE_URL}/auth/v1/token",
+            params={"grant_type": "refresh_token"},
+            headers={"apikey": SUPABASE_ANON_KEY, "Content-Type": "application/json"},
+            json={"refresh_token": body.refresh_token},
+            timeout=15,
+        )
+    except Exception:
+        # Network/transient problem talking to Supabase — NOT an invalid token.
+        # 503 tells the client to keep its session and try again later.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Authentication service is temporarily unavailable. Please try again.",
+        )
+    if resp.status_code != 200:
+        # The refresh token is genuinely invalid/expired.
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Could not refresh session.")
+
+    data = resp.json()
+    uid = (data.get("user") or {}).get("id")
+    # Cut off a deactivated account at refresh time (so it can't renew forever).
+    if uid:
+        prof = supabase.table("profiles").select("is_active").eq("id", uid).limit(1).execute().data
+        if prof and prof[0].get("is_active") is False:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="This account has been deactivated. Contact your administrator.",
+            )
+    return {
+        "access_token": data.get("access_token"),
+        "refresh_token": data.get("refresh_token"),
+        "token_type": data.get("token_type", "bearer"),
+        "expires_in": data.get("expires_in"),
     }
 
 

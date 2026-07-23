@@ -17,6 +17,32 @@ import MapView, { type MapboxMap } from "@/components/MapView";
 const ACTUAL = "#22c55e"; // green — the path actually driven
 const PLANNED = "#3b82f6"; // blue — the assigned route geometry
 
+// A break in the recorded path: the app was closed / had no GPS for a while, so
+// the two fixes on either side are NOT connected (drawing a straight line there
+// would be a phantom segment the bus never drove). Pings are ~5 s apart, so a gap
+// this long means real missing data; a jump this far means a teleport/GPS glitch.
+const PATH_GAP_MS = 120_000; // 2 minutes with no fix
+const PATH_JUMP_M = 2_000; // 2 km between consecutive fixes (≈1440 km/h at 5 s)
+
+function metersBetween(a: { lat: number; lng: number }, b: { lat: number; lng: number }): number {
+  const R = 6371000;
+  const dLa = ((b.lat - a.lat) * Math.PI) / 180;
+  const dLo = ((b.lng - a.lng) * Math.PI) / 180;
+  const la1 = (a.lat * Math.PI) / 180;
+  const la2 = (b.lat * Math.PI) / 180;
+  const h = Math.sin(dLa / 2) ** 2 + Math.cos(la1) * Math.cos(la2) * Math.sin(dLo / 2) ** 2;
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
+}
+
+/** True when the path MUST break between ping i and i+1 (long time gap or an
+ *  implausible jump) — so we never connect across it. */
+function isPathBreak(pings: { lat: number; lng: number; recorded_at: string }[], times: number[], i: number): boolean {
+  if (i < 0 || i + 1 >= pings.length) return false;
+  const dt = times[i + 1] - times[i];
+  if (dt > PATH_GAP_MS) return true;
+  return metersBetween(pings[i], pings[i + 1]) > PATH_JUMP_M;
+}
+
 function fmtTime(iso: string | null): string {
   if (!iso) return "—";
   const d = new Date(iso.replace(" ", "T"));
@@ -132,7 +158,26 @@ export default function ManagerHistoryPage() {
 
     const coords = trip.pings.map((p) => [p.lng, p.lat] as [number, number]);
     if (coords.length > 1) {
-      map.addSource("hist-actual", { type: "geojson", data: { type: "Feature", geometry: { type: "LineString", coordinates: coords }, properties: {} } as GeoJSON.Feature });
+      // Split into contiguous SEGMENTS, breaking at any gap/jump, and draw a
+      // MultiLineString so a long stop (app closed) is never bridged by a
+      // phantom straight line. Real offline movement is a dense buffered path and
+      // stays a single segment; only true data gaps break.
+      const ptimes = trip.pings.map((p) => pingMs(p.recorded_at));
+      const segments: [number, number][][] = [];
+      let seg: [number, number][] = [coords[0]];
+      for (let i = 0; i < coords.length - 1; i++) {
+        if (isPathBreak(trip.pings, ptimes, i)) {
+          if (seg.length > 1) segments.push(seg);
+          seg = [coords[i + 1]];
+        } else {
+          seg.push(coords[i + 1]);
+        }
+      }
+      if (seg.length > 1) segments.push(seg);
+      map.addSource("hist-actual", {
+        type: "geojson",
+        data: { type: "Feature", geometry: { type: "MultiLineString", coordinates: segments }, properties: {} } as GeoJSON.Feature,
+      });
       map.addLayer({
         id: "hist-actual",
         type: "line",
@@ -178,10 +223,17 @@ export default function ManagerHistoryPage() {
     } else {
       let i = 0;
       while (i < times.length - 1 && times[i + 1] < target) i++;
-      const span = times[i + 1] - times[i] || 1;
-      const f = (target - times[i]) / span;
-      lng = selected.pings[i].lng + (selected.pings[i + 1].lng - selected.pings[i].lng) * f;
-      lat = selected.pings[i].lat + (selected.pings[i + 1].lat - selected.pings[i].lat) * f;
+      if (isPathBreak(selected.pings, times, i)) {
+        // Target falls inside a real gap — the bus wasn't moving along any known
+        // path, so HOLD at the last real fix instead of gliding a phantom line
+        // across the gap at a phantom time.
+        lng = selected.pings[i].lng; lat = selected.pings[i].lat;
+      } else {
+        const span = times[i + 1] - times[i] || 1;
+        const f = (target - times[i]) / span;
+        lng = selected.pings[i].lng + (selected.pings[i + 1].lng - selected.pings[i].lng) * f;
+        lat = selected.pings[i].lat + (selected.pings[i + 1].lat - selected.pings[i].lat) * f;
+      }
     }
     markerRef.current.setLngLat([lng, lat]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
