@@ -17,6 +17,22 @@ from utils import synthesize_login_email
 
 router = APIRouter(prefix="/drivers", tags=["drivers"])
 
+# `profiles.national_id` arrives with migration 035. Until that runs, selecting or
+# writing it would 42703 and break the whole drivers page, so probe ONCE and fall
+# back to the pre-migration shape. Deploy order therefore doesn't matter.
+_HAS_NATIONAL_ID: Optional[bool] = None
+
+
+def _has_national_id() -> bool:
+    global _HAS_NATIONAL_ID
+    if _HAS_NATIONAL_ID is None:
+        try:
+            supabase.table("profiles").select("national_id").limit(1).execute()
+            _HAS_NATIONAL_ID = True
+        except Exception:
+            _HAS_NATIONAL_ID = False
+    return _HAS_NATIONAL_ID
+
 
 class DriverCreate(BaseModel):
     name: str = Field(..., min_length=1)
@@ -27,6 +43,8 @@ class DriverCreate(BaseModel):
     license_number: Optional[str] = None
     license_start_date: Optional[date] = None
     license_expiry_date: Optional[date] = None
+    # SCHOOL supervisors carry a national ID instead of a driving licence.
+    national_id: Optional[str] = None
 
 
 def _delete_auth_user(user_id: str) -> None:
@@ -60,6 +78,7 @@ def _provision_driver(
     license_number: Optional[str] = None,
     license_start_date: Optional[str] = None,  # ISO string or None
     license_expiry_date: Optional[str] = None,
+    national_id: Optional[str] = None,
 ) -> dict:
     """Create the auth login + driver profile (role='driver'), scoped to `org_id`,
     rolling back the auth user if the profile insert fails. Raises HTTPException on
@@ -90,6 +109,7 @@ def _provision_driver(
             "license_number": license_number,
             "license_start_date": license_start_date,
             "license_expiry_date": license_expiry_date,
+            **({"national_id": national_id} if _has_national_id() else {}),
         }
         result = supabase.table("profiles").insert(profile_payload).execute()
     except Exception as exc:
@@ -121,6 +141,7 @@ def create_driver(
         license_number=body.license_number,
         license_start_date=body.license_start_date.isoformat() if body.license_start_date else None,
         license_expiry_date=body.license_expiry_date.isoformat() if body.license_expiry_date else None,
+        national_id=body.national_id,
     )
     return {
         "id": driver["id"],
@@ -136,6 +157,7 @@ class BulkDriverRow(BaseModel):
     username: Optional[str] = None
     password: Optional[str] = None
     phone: Optional[str] = None
+    national_id: Optional[str] = None
 
 
 class BulkDriverRequest(BaseModel):
@@ -165,7 +187,11 @@ def bulk_create_drivers(
                 raise ValueError("Username is required.")
             if len(password) < 6:
                 raise ValueError("Password must be at least 6 characters.")
-            _provision_driver(org_id, name=name, username=username, password=password, phone=(row.phone or "").strip() or None)
+            _provision_driver(
+                org_id, name=name, username=username, password=password,
+                phone=(row.phone or "").strip() or None,
+                national_id=(row.national_id or "").strip() or None,
+            )
             created += 1
         except Exception as exc:
             errors.append({"row": i + 2, "label": label, "error": _bulk_msg(exc)})  # +2: header + 1-indexed
@@ -181,7 +207,10 @@ def list_drivers(
 
     drivers = (
         supabase.table("profiles")
-        .select("id, name, username, phone, is_active, created_at, license_number, license_start_date, license_expiry_date")
+        .select(
+            "id, name, username, phone, is_active, created_at, license_number, "
+            "license_start_date, license_expiry_date" + (", national_id" if _has_national_id() else "")
+        )
         .eq("org_id", org_id)
         .eq("role", "driver")
         .order("created_at", desc=True)  # newest first
@@ -239,6 +268,7 @@ class DriverUpdate(BaseModel):
     license_number: Optional[str] = None
     license_start_date: Optional[date] = None
     license_expiry_date: Optional[date] = None
+    national_id: Optional[str] = None
 
 
 def _get_owned_driver(driver_id: str, org_id: str) -> dict:
@@ -281,6 +311,8 @@ def update_driver(
         update["license_start_date"] = body.license_start_date.isoformat() if body.license_start_date else None
     if "license_expiry_date" in body.model_fields_set:
         update["license_expiry_date"] = body.license_expiry_date.isoformat() if body.license_expiry_date else None
+    if "national_id" in body.model_fields_set and _has_national_id():
+        update["national_id"] = body.national_id
     if not update:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No fields to update.")
 

@@ -29,6 +29,7 @@ const MANAGER_NAV: { href: string; key: string; perm?: string; group: string; sc
   { href: "/manager/history", key: "nav.history", perm: "view_tracking", group: "nav.grpMonitoring" },
   { href: "/manager/performance", key: "nav.performance", perm: "view_tracking", group: "nav.grpMonitoring", schoolOnly: true, feature: "performance" },
   { href: "/manager/logs", key: "nav.logs", perm: "view_tracking", group: "nav.grpMonitoring", schoolOnly: true, feature: "logs" },
+  { href: "/manager/buses-today", key: "nav.busesToday", perm: "view_tracking", group: "nav.grpMonitoring", schoolOnly: true, feature: "buses_today" },
   { href: "/manager/drivers", key: "nav.drivers", perm: "manage_drivers", group: "nav.grpManagement" },
   { href: "/manager/bus-drivers", key: "nav.busDrivers", perm: "manage_drivers", group: "nav.grpManagement", schoolOnly: true, feature: "bus_drivers" },
   { href: "/manager/directory", key: "nav.directory", perm: "manage_drivers", group: "nav.grpManagement", schoolOnly: true, feature: "directory" },

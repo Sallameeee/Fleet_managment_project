@@ -9,6 +9,13 @@ import {
   type ManagerNotification,
 } from "@/lib/manager";
 import { useT } from "@/lib/i18n";
+import {
+  reportUnreadCount,
+  isNotificationSoundMuted,
+  setNotificationSoundMuted,
+  playNotificationSound,
+  resetNotificationBaseline,
+} from "@/lib/notificationSound";
 
 // Auto-refresh cadence for the badge (polling — no push/Firebase).
 const POLL_MS = 15000;
@@ -23,14 +30,39 @@ export default function NotificationBell() {
   const [open, setOpen] = useState(false);
   const [items, setItems] = useState<ManagerNotification[]>([]);
   const [loading, setLoading] = useState(false);
+  // Chime on/off, persisted in localStorage. Read after mount so SSR and the
+  // first client render agree (no hydration mismatch).
+  const [muted, setMuted] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
+  useEffect(() => {
+    setMuted(isNotificationSoundMuted());
+  }, []);
+
+  function toggleMuted() {
+    const next = !muted;
+    setMuted(next);
+    setNotificationSoundMuted(next);
+    if (!next) playNotificationSound(); // short preview when switching back on
+  }
+
   const refreshCount = useCallback(() => {
-    getUnreadNotificationCount().then(setUnread).catch(() => {});
+    getUnreadNotificationCount()
+      .then((n) => {
+        // Chimes only when the count ROSE. The first poll after mount is the
+        // silent baseline, so notifications already waiting on page load never
+        // make a sound. Best-effort: never let audio break the badge.
+        reportUnreadCount(n);
+        setUnread(n);
+      })
+      .catch(() => {});
   }, []);
 
   // Auto-light-up: poll the unread count so the badge appears on its own.
   useEffect(() => {
+    // Fresh baseline for this mount (covers an account switch without a full
+    // page reload), so the first poll never chimes for existing notifications.
+    resetNotificationBaseline();
     refreshCount();
     const id = setInterval(refreshCount, POLL_MS);
     return () => clearInterval(id);
@@ -73,6 +105,9 @@ export default function NotificationBell() {
     if (n.type === "change_request_new") return `/manager/change-requests?focus=${n.related_id}`;
     if (n.type === "profile_request_new") return `/manager/profile-requests?focus=${n.related_id}`;
     if (n.type === "parent_report_new") return `/manager/parent-reports?focus=${n.related_id}`;
+    // A supervisor reported a child who boarded despite an approved change —
+    // related_id is that change request, so open it.
+    if (n.type === "boarding_flag") return `/manager/change-requests?focus=${n.related_id}`;
     return null;
   }
 
@@ -102,6 +137,18 @@ export default function NotificationBell() {
         <div className="absolute right-0 z-50 mt-2 w-80 max-w-[calc(100vw-2rem)] overflow-hidden rounded-xl border border-ink-700 bg-ink-900 shadow-xl">
           <div className="flex items-center justify-between border-b border-ink-800 px-4 py-2.5">
             <span className="text-sm font-semibold text-white">{t("notif.title")}</span>
+            <div className="flex items-center gap-1">
+            <button
+              onClick={toggleMuted}
+              aria-label={muted ? t("notif.soundOn") : t("notif.soundOff")}
+              title={muted ? t("notif.soundOn") : t("notif.soundOff")}
+              className={
+                "rounded-md p-1 hover:bg-ink-800 hover:text-white " +
+                (muted ? "text-slate-500" : "text-brand-sage")
+              }
+            >
+              {muted ? <SpeakerOffIcon /> : <SpeakerOnIcon />}
+            </button>
             <button
               onClick={() => loadList(false)}
               aria-label={t("common.reload")}
@@ -110,6 +157,7 @@ export default function NotificationBell() {
             >
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 4 23 10 17 10" /><polyline points="1 20 1 14 7 14" /><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" /></svg>
             </button>
+            </div>
           </div>
           <div className="max-h-96 overflow-y-auto">
             {loading ? (
@@ -157,6 +205,26 @@ function timeAgo(iso: string): string {
   if (s < 3600) return `${Math.floor(s / 60)}m ago`;
   if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
   return d.toLocaleDateString();
+}
+
+function SpeakerOnIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+      <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
+      <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
+    </svg>
+  );
+}
+
+function SpeakerOffIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+      <line x1="23" y1="9" x2="17" y2="15" />
+      <line x1="17" y1="9" x2="23" y2="15" />
+    </svg>
+  );
 }
 
 function BellIcon() {

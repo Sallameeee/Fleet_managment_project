@@ -12,9 +12,15 @@ export default function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="en">
+    // The inline script below sets lang/dir/theme on <html> BEFORE React
+    // hydrates (from localStorage), so the server's `lang="en"` + no-theme-class
+    // deliberately differ from the hydrated DOM. suppressHydrationWarning is the
+    // documented Next.js pattern for this — it applies only to THIS element's own
+    // attributes/class (one level deep), never its children.
+    <html lang="en" suppressHydrationWarning>
       <head>
-        {/* Apply the saved theme before paint to avoid a flash. Default = dark. */}
+        {/* Apply the saved language + theme before paint, so there is no flash of
+            the wrong direction/theme and the attributes are correct pre-hydration. */}
         <script
           dangerouslySetInnerHTML={{
             __html:

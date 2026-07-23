@@ -95,6 +95,66 @@ def profile_request_created(org_id: str, req_id: str, parent_name: str | None) -
     )
 
 
+def change_request_supervisors(
+    org_id: str,
+    req_id: str,
+    request_date: str,
+    student_name: str | None,
+    current_route_id: str | None,
+    requested_route_id: str | None,
+    requested_stop: str | None,
+) -> None:
+    """On APPROVAL, tell the two supervisors whose bus roster just changed for that
+    day: the LOSING one that the child is not with them, the GAINING one that the
+    child joins them (with the drop-off stop). Silent when a route has no
+    supervisor assigned that day, or when both routes share one supervisor for the
+    losing note. Never raises — create_notification swallows failures."""
+    from capacity_logic import route_supervisor_id  # local: avoid an import cycle
+
+    who = student_name or "A student"
+    losing = route_supervisor_id(org_id, current_route_id, request_date)
+    gaining = route_supervisor_id(org_id, requested_route_id, request_date)
+
+    if losing and losing != gaining:
+        create_notification(
+            org_id, "supervisor", losing, "change_request_roster_out",
+            "Student not with you today",
+            f"{who} is not on your bus on {request_date} — an approved bus change moved them to another bus.",
+            related_id=req_id, dedup_key=f"cr_sup_out:{req_id}",
+        )
+    if gaining:
+        where = f" Drop-off: {requested_stop}." if requested_stop else ""
+        create_notification(
+            org_id, "supervisor", gaining, "change_request_roster_in",
+            "Student joins your bus today",
+            f"{who} rides your bus on {request_date} (approved bus change).{where}",
+            related_id=req_id, dedup_key=f"cr_sup_in:{req_id}",
+        )
+
+
+def boarding_flag(
+    org_id: str,
+    req_id: str | None,
+    student_name: str | None,
+    supervisor_name: str | None,
+    route_name: str | None,
+    note: str | None = None,
+) -> None:
+    """A supervisor reports that a child boarded THEIR bus even though an approved
+    change moved that child elsewhere today. Raises a MANAGER notification so it
+    shows in the dashboard bell and opens the related change request."""
+    who = student_name or "A student"
+    extra = f" Note: {note}" if note else ""
+    create_notification(
+        org_id, "manager", None, "boarding_flag",
+        "Student boarded the wrong bus",
+        f"{who} boarded {route_name or 'a bus'} despite an approved bus change"
+        f"{f' (reported by {supervisor_name})' if supervisor_name else ''}.{extra}",
+        related_id=req_id,
+        dedup_key=f"board_flag:{req_id}" if req_id else None,
+    )
+
+
 def profile_request_decided(org_id: str, parent_id: str, req_id: str, approved: bool) -> None:
     create_notification(
         org_id, "parent", parent_id, "profile_request_result",

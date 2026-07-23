@@ -6,3 +6,4 @@ httpx
 reportlab
 openpyxl
 PyJWT
+tzdata          # IANA zone db so Africa/Cairo (DST) resolves on every host

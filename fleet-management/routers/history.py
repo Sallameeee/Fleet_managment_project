@@ -24,7 +24,7 @@ from database import supabase
 
 router = APIRouter(prefix="/history", tags=["history"])
 
-LOCAL_TZ = timezone(timedelta(hours=2))  # Egypt (UTC+2)
+from capacity_logic import LOCAL_TZ  # single DST-aware Africa/Cairo zone
 
 
 def _local_hour(iso) -> int:

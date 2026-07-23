@@ -270,4 +270,9 @@ def decide_change_request(
         {"status": "approved", "decided_at": now, "decided_by": current_user["id"]}
     ).eq("id", req_id).eq("org_id", org_id).execute()
     notify.change_request_decided(org_id, parent_id, req_id, True, student_name, route_name)
+    # Both buses' supervisors need today's roster change reflected in their app.
+    notify.change_request_supervisors(
+        org_id, req_id, req["request_date"], student_name,
+        req.get("current_route_id"), req.get("requested_route_id"), req.get("requested_stop"),
+    )
     return {"id": req_id, "status": "approved", "requested_count_after": count_after, "capacity": cap}

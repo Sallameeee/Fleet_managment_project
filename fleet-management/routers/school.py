@@ -6,14 +6,14 @@
 School orgs only; University callers get a 403.
 """
 
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from auth import require_permission
-from capacity_logic import require_school_org
+from capacity_logic import effective_roster, require_school_org
 from database import supabase
 from features import require_feature
 from live_logic import LOCAL_TZ, driver_live_positions, pick_current_assignment
@@ -134,6 +134,116 @@ def directory(current_user: dict = Depends(require_permission("manage_drivers"))
     bus_drivers.sort(key=lambda x: (x["name"] or "").lower())
 
     return {"supervisors": supervisors, "bus_drivers": bus_drivers}
+
+
+@router.get("/buses-today", dependencies=[Depends(require_feature("buses_today"))])
+def buses_today(current_user: dict = Depends(require_permission("view_tracking"))):
+    """Every bus operating TODAY with its EFFECTIVE roster — who is actually on
+    each bus today after approved one-day bus changes.
+
+    Reuses `effective_roster` from capacity_logic (the SAME function the supervisor
+    app roster and the parent map use) so this manager view can never disagree
+    with them. Per bus it lists:
+      * riding    — students actually on this bus today, each flagged moved_in
+                    (joined via a change) with their effective drop-off stop,
+      * moved_out — students normally on this route who ride another bus today
+                    (with the destination route name),
+      * live/trip status (not started / active / completed) and the supervisor.
+    School only.
+    """
+    org_id = current_user["org_id"]
+    require_school_org(org_id)
+
+    today = datetime.now(LOCAL_TZ).date().isoformat()
+    now_t = datetime.now(LOCAL_TZ).time()
+
+    routes = supabase.table("routes").select("id, name").eq("org_id", org_id).execute().data
+    route_name = {r["id"]: r["name"] for r in routes}
+
+    # Today's assignments → supervisor + bus per route (current one if several).
+    assigns = (
+        supabase.table("assignments")
+        .select("driver_id, vehicle_id, route_id, start_time, end_time")
+        .eq("org_id", org_id)
+        .eq("trip_date", today)
+        .execute()
+        .data
+    )
+    by_route: dict = {}
+    for a in assigns:
+        if a.get("route_id"):
+            by_route.setdefault(a["route_id"], []).append(a)
+    veh_ids = list({a["vehicle_id"] for a in assigns if a.get("vehicle_id")})
+    drv_ids = list({a["driver_id"] for a in assigns if a.get("driver_id")})
+    bus_no = {v["id"]: v["bus_number"] for v in (supabase.table("vehicles").select("id, bus_number").in_("id", veh_ids).execute().data if veh_ids else [])}
+    sup_name = {p["id"]: p["name"] for p in (supabase.table("profiles").select("id, name").in_("id", drv_ids).execute().data if drv_ids else [])}
+
+    # Today's trips per route → live/completed status.
+    trips = (
+        supabase.table("trips")
+        .select("route_id, status, started_at")
+        .eq("org_id", org_id)
+        .gte("started_at", datetime.combine(datetime.now(LOCAL_TZ).date(), time.min, tzinfo=LOCAL_TZ).astimezone(timezone.utc).isoformat())
+        .execute()
+        .data
+    )
+    trip_status: dict = {}
+    for t in trips:
+        rid = t.get("route_id")
+        if not rid:
+            continue
+        # active beats completed if both exist for a route today.
+        if trip_status.get(rid) != "active":
+            trip_status[rid] = t.get("status") or trip_status.get(rid)
+
+    buses = []
+    for rid, rname in route_name.items():
+        riding, moved_out = effective_roster(org_id, rid, today)
+        cur = pick_current_assignment(by_route.get(rid, []), now_t) if by_route.get(rid) else None
+        # Show a bus if it operates today (assignment) OR its roster is affected.
+        if not cur and not riding and not moved_out:
+            continue
+        buses.append(
+            {
+                "route_id": rid,
+                "route_name": rname,
+                "vehicle_bus_number": bus_no.get(cur.get("vehicle_id")) if cur else None,
+                "supervisor_name": sup_name.get(cur.get("driver_id")) if cur else None,
+                "trip_status": trip_status.get(rid, "not_started"),
+                "onboard_count": len(riding),
+                "moved_in_count": sum(1 for s in riding if s.get("moved_in")),
+                "moved_out_count": len(moved_out),
+                "riding": sorted(
+                    [
+                        {
+                            "student_id": s["id"],
+                            "name": s.get("name"),
+                            "class_name": s.get("class_name"),
+                            "grade": s.get("grade"),
+                            "drop_off_stop": s.get("effective_stop"),
+                            "moved_in": bool(s.get("moved_in")),
+                        }
+                        for s in riding
+                    ],
+                    key=lambda x: (x["name"] or "").lower(),
+                ),
+                "moved_out": sorted(
+                    [
+                        {
+                            "student_id": m["id"],
+                            "name": m.get("name"),
+                            "class_name": m.get("class_name"),
+                            "grade": m.get("grade"),
+                            "to_route_name": route_name.get(m.get("moved_to_route_id")),
+                        }
+                        for m in moved_out
+                    ],
+                    key=lambda x: (x["name"] or "").lower(),
+                ),
+            }
+        )
+    buses.sort(key=lambda x: (x["route_name"] or "").lower())
+    return {"date": today, "count": len(buses), "buses": buses}
 
 
 @router.get("/performance", dependencies=[Depends(require_feature("performance"))])

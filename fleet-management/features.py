@@ -37,6 +37,7 @@ FEATURES: dict[str, dict] = {
     "directory": {"label": "Staff Directory", "module": "school", "core": False},
     "bus_drivers": {"label": "Bus Drivers", "module": "school", "core": False},
     "buses_map": {"label": "All-Buses Map", "module": "school", "core": False},
+    "buses_today": {"label": "Buses Today", "module": "school", "core": False},
     "performance": {"label": "Performance Monitoring", "module": "school", "core": False},
     "logs": {"label": "Event Logs", "module": "school", "core": False},
     "notifications": {"label": "Notifications", "module": "school", "core": False},

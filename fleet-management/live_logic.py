@@ -14,7 +14,7 @@ from database import supabase
 
 ONLINE_WINDOW = timedelta(minutes=2)
 LAST_KNOWN_LOOKBACK = timedelta(hours=24)
-LOCAL_TZ = timezone(timedelta(hours=2))  # Egypt (UTC+2)
+from capacity_logic import LOCAL_TZ  # single DST-aware Africa/Cairo zone
 
 
 def parse_hm(value: Optional[str]) -> Optional[time]:

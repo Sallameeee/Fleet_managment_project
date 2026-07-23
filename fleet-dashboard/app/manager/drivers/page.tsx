@@ -26,13 +26,15 @@ const SUPERVISOR_COLUMNS = [
   { key: "username", header: "username", aliases: ["login", "user"] },
   { key: "password", header: "password", aliases: ["pass"] },
   { key: "phone", header: "phone" },
+  // Supervisors don't drive — they carry a national ID, not a licence.
+  { key: "national_id", header: "national_id", aliases: ["nationalid", "national id", "nid"] },
 ];
 const SUPERVISOR_SAMPLE = [
-  { name: "Sara Adel", username: "sara.adel", password: "changeme1", phone: "0102-555-1212" },
-  { name: "Khaled Nabil", username: "khaled.nabil", password: "changeme2", phone: "0106-777-3434" },
+  { name: "Sara Adel", username: "sara.adel", password: "changeme1", phone: "0102-555-1212", national_id: "29801011234567" },
+  { name: "Khaled Nabil", username: "khaled.nabil", password: "changeme2", phone: "0106-777-3434", national_id: "29905026543210" },
 ];
 
-const EMPTY = { name: "", username: "", password: "", phone: "", email: "", license_number: "", license_start_date: "", license_expiry_date: "" };
+const EMPTY = { name: "", username: "", password: "", phone: "", email: "", license_number: "", license_start_date: "", license_expiry_date: "", national_id: "" };
 
 export default function ManagerDriversPage() {
   const { t } = useT();
@@ -51,7 +53,7 @@ export default function ManagerDriversPage() {
   const [createdLogin, setCreatedLogin] = useState<string | null>(null);
 
   const [editDriver, setEditDriver] = useState<ManagerDriver | null>(null);
-  const [eForm, setEForm] = useState({ name: "", phone: "", is_active: true, license_number: "", license_start_date: "", license_expiry_date: "" });
+  const [eForm, setEForm] = useState({ name: "", phone: "", is_active: true, license_number: "", license_start_date: "", license_expiry_date: "", national_id: "" });
   const [saving, setSaving] = useState(false);
   const [eError, setEError] = useState<string | null>(null);
 
@@ -89,9 +91,11 @@ export default function ManagerDriversPage() {
         password: form.password,
         phone: form.phone.trim() || undefined,
         email: form.email.trim() || undefined,
-        license_number: form.license_number.trim() || undefined,
-        license_start_date: form.license_start_date || undefined,
-        license_expiry_date: form.license_expiry_date || undefined,
+        // A school SUPERVISOR carries a national ID; a university DRIVER a licence.
+        national_id: isSchool ? form.national_id.trim() || undefined : undefined,
+        license_number: isSchool ? undefined : form.license_number.trim() || undefined,
+        license_start_date: isSchool ? undefined : form.license_start_date || undefined,
+        license_expiry_date: isSchool ? undefined : form.license_expiry_date || undefined,
       });
       const slug = getManagerSlug();
       setCreatedLogin(slug ? `${res.username}@${slug}` : res.username);
@@ -110,6 +114,7 @@ export default function ManagerDriversPage() {
       name: d.name,
       phone: d.phone ?? "",
       is_active: d.is_active,
+      national_id: d.national_id ?? "",
       license_number: d.license_number ?? "",
       license_start_date: (d.license_start_date ?? "").slice(0, 10),
       license_expiry_date: (d.license_expiry_date ?? "").slice(0, 10),
@@ -127,9 +132,10 @@ export default function ManagerDriversPage() {
         name: eForm.name.trim(),
         phone: eForm.phone.trim() || null,
         is_active: eForm.is_active,
-        license_number: eForm.license_number.trim() || null,
-        license_start_date: eForm.license_start_date || null,
-        license_expiry_date: eForm.license_expiry_date || null,
+        national_id: isSchool ? eForm.national_id.trim() || null : undefined,
+        license_number: isSchool ? undefined : eForm.license_number.trim() || null,
+        license_start_date: isSchool ? undefined : eForm.license_start_date || null,
+        license_expiry_date: isSchool ? undefined : eForm.license_expiry_date || null,
       });
       setEditDriver(null);
       toast.success(t("toast.saved"));
@@ -185,6 +191,7 @@ export default function ManagerDriversPage() {
             <tr>
               <th className="px-4 py-3">{isSchool ? t("common.supervisor") : t("common.driver")}</th>
               <th className="px-4 py-3">{t("common.username")}</th>
+              {isSchool && <th className="px-4 py-3">{t("drivers.nationalId")}</th>}
               <th className="px-4 py-3">{t("common.status")}</th>
               <th className="px-4 py-3">{t("summary.online")}</th>
               <th className="px-4 py-3">{t("drivers.currentVehicle")}</th>
@@ -193,12 +200,13 @@ export default function ManagerDriversPage() {
           </thead>
           <tbody className="divide-y divide-ink-800">
             {!loading && drivers.length === 0 && !error && (
-              <tr><td colSpan={6} className="px-4 py-8 text-center text-slate-500">—</td></tr>
+              <tr><td colSpan={isSchool ? 7 : 6} className="px-4 py-8 text-center text-slate-500">—</td></tr>
             )}
             {drivers.map((d) => (
               <tr key={d.id} className="hover:bg-ink-900/40">
                 <td className="px-4 py-3 font-medium text-white">{d.name}</td>
                 <td className="px-4 py-3 text-slate-400">{d.username}</td>
+                {isSchool && <td className="px-4 py-3 text-slate-400">{d.national_id || "—"}</td>}
                 <td className="px-4 py-3"><StatusBadge status={d.is_active ? "active" : "inactive"} /></td>
                 <td className="px-4 py-3">
                   {d.online ? (
@@ -245,11 +253,18 @@ export default function ManagerDriversPage() {
               <Input label={t("common.phone")} value={form.phone} onChange={(e) => setForm((f) => ({ ...f, phone: e.target.value }))} />
               <Input label={t("common.email")} type="email" value={form.email} onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))} />
             </div>
-            <Input label={t("drivers.license")} value={form.license_number} onChange={(e) => setForm((f) => ({ ...f, license_number: e.target.value }))} />
-            <div className="grid grid-cols-2 gap-3">
-              <Input label={t("drivers.licenseStart")} type="date" value={form.license_start_date} onChange={(e) => setForm((f) => ({ ...f, license_start_date: e.target.value }))} />
-              <Input label={t("drivers.licenseExpiry")} type="date" value={form.license_expiry_date} onChange={(e) => setForm((f) => ({ ...f, license_expiry_date: e.target.value }))} />
-            </div>
+            {/* Supervisors do not drive -> national ID. University drivers keep the licence. */}
+            {isSchool ? (
+              <Input label={t("drivers.nationalId")} value={form.national_id} onChange={(e) => setForm((f) => ({ ...f, national_id: e.target.value }))} />
+            ) : (
+              <>
+                <Input label={t("drivers.license")} value={form.license_number} onChange={(e) => setForm((f) => ({ ...f, license_number: e.target.value }))} />
+                <div className="grid grid-cols-2 gap-3">
+                  <Input label={t("drivers.licenseStart")} type="date" value={form.license_start_date} onChange={(e) => setForm((f) => ({ ...f, license_start_date: e.target.value }))} />
+                  <Input label={t("drivers.licenseExpiry")} type="date" value={form.license_expiry_date} onChange={(e) => setForm((f) => ({ ...f, license_expiry_date: e.target.value }))} />
+                </div>
+              </>
+            )}
             {createError &&<div className="rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-300">{createError}</div>}
             <div className="flex justify-end gap-2 pt-1">
               <button type="button" onClick={() => setOpen(false)} className="rounded-lg border border-ink-700 px-4 py-2 text-sm text-slate-300 hover:border-brand hover:text-white">{t("common.cancel")}</button>
@@ -264,11 +279,17 @@ export default function ManagerDriversPage() {
           <form onSubmit={handleEdit} className="space-y-3">
             <Input label={`${t("common.name")} *`} value={eForm.name} onChange={(e) => setEForm((f) => ({ ...f, name: e.target.value }))} required />
             <Input label={t("common.phone")} value={eForm.phone} onChange={(e) => setEForm((f) => ({ ...f, phone: e.target.value }))} />
-            <Input label={t("drivers.license")} value={eForm.license_number} onChange={(e) => setEForm((f) => ({ ...f, license_number: e.target.value }))} />
-            <div className="grid grid-cols-2 gap-3">
-              <Input label={t("drivers.licenseStart")} type="date" value={eForm.license_start_date} onChange={(e) => setEForm((f) => ({ ...f, license_start_date: e.target.value }))} />
-              <Input label={t("drivers.licenseExpiry")} type="date" value={eForm.license_expiry_date} onChange={(e) => setEForm((f) => ({ ...f, license_expiry_date: e.target.value }))} />
-            </div>
+            {isSchool ? (
+              <Input label={t("drivers.nationalId")} value={eForm.national_id} onChange={(e) => setEForm((f) => ({ ...f, national_id: e.target.value }))} />
+            ) : (
+              <>
+                <Input label={t("drivers.license")} value={eForm.license_number} onChange={(e) => setEForm((f) => ({ ...f, license_number: e.target.value }))} />
+                <div className="grid grid-cols-2 gap-3">
+                  <Input label={t("drivers.licenseStart")} type="date" value={eForm.license_start_date} onChange={(e) => setEForm((f) => ({ ...f, license_start_date: e.target.value }))} />
+                  <Input label={t("drivers.licenseExpiry")} type="date" value={eForm.license_expiry_date} onChange={(e) => setEForm((f) => ({ ...f, license_expiry_date: e.target.value }))} />
+                </div>
+              </>
+            )}
             <label className="flex items-center gap-2 text-sm text-slate-300">
               <input type="checkbox" checked={eForm.is_active} onChange={(e) => setEForm((f) => ({ ...f, is_active: e.target.checked }))} className="h-4 w-4 accent-[#3AA76D]" />
               {t("common.active")}

@@ -20,7 +20,16 @@ from fastapi import HTTPException, status
 
 from database import supabase
 
-LOCAL_TZ = timezone(timedelta(hours=2))  # Egypt (UTC+2) — same as the rest of the app
+# Egypt local time. Africa/Cairo observes DST (UTC+2 winter, UTC+3 summer), so a
+# FIXED +2 offset displayed summer timestamps an hour early. ZoneInfo handles the
+# switch; if the IANA db is somehow unavailable we fall back to the old fixed
+# offset so nothing can crash on a missing-tzdata host.
+try:  # pragma: no cover - depends on host tz database
+    from zoneinfo import ZoneInfo
+
+    LOCAL_TZ = ZoneInfo("Africa/Cairo")
+except Exception:  # pragma: no cover
+    LOCAL_TZ = timezone(timedelta(hours=2))
 DEFAULT_CUTOFF = time(20, 0)  # 8 PM, if the org has none set
 
 
@@ -150,6 +159,97 @@ def approved_change_maps(org_id: str) -> tuple:
         if rout:
             outgoing[(rout, d)] = outgoing.get((rout, d), 0) + 1
     return incoming, outgoing
+
+
+def effective_roster(org_id: str, route_id: str, date_iso: str) -> tuple[list, list]:
+    """Who is ACTUALLY on this route on this date, per approved one-day changes.
+
+    Returns (riding, moved_out):
+      * riding    — base students on the route, MINUS those an approved change moved
+                    off it, PLUS those it moved onto it. Each dict carries
+                    `effective_stop` (the change's requested_stop when moved in,
+                    else the student's own drop_off_stop) and `moved_in`.
+      * moved_out — students normally on this route who were moved to ANOTHER bus
+                    today. They are NOT on the roster, but the supervisor is shown
+                    them so a child who boards anyway can be flagged.
+
+    This is the SAME rule the parent/student track endpoint applies per-child, kept
+    here so the supervisor roster and the parent map can never disagree.
+    """
+    base = (
+        supabase.table("passengers")
+        .select("id, name, student_phone, parent_phone, grade, class_name, drop_off_stop")
+        .eq("org_id", org_id)
+        .eq("route_id", route_id)
+        .execute()
+        .data
+    )
+    try:
+        crs = (
+            supabase.table("change_requests")
+            .select("student_id, current_route_id, requested_route_id, requested_stop")
+            .eq("org_id", org_id)
+            .eq("request_date", date_iso)
+            .eq("status", "approved")
+            .execute()
+            .data
+        )
+    except Exception:
+        crs = []  # not migrated / unavailable -> plain route roster
+
+    riding = {
+        s["id"]: {**s, "effective_stop": s.get("drop_off_stop"), "moved_in": False}
+        for s in base
+    }
+    moved_out: list = []
+    incoming_ids = [c["student_id"] for c in crs if c.get("requested_route_id") == route_id]
+    detail = {}
+    if incoming_ids:
+        detail = {
+            s["id"]: s
+            for s in supabase.table("passengers")
+            .select("id, name, student_phone, parent_phone, grade, class_name, drop_off_stop")
+            .in_("id", incoming_ids)
+            .execute()
+            .data
+        }
+    for c in crs:
+        sid = c["student_id"]
+        # Moved OFF this route today (and not straight back onto it).
+        if c.get("current_route_id") == route_id and c.get("requested_route_id") != route_id:
+            gone = riding.pop(sid, None)
+            if gone:
+                moved_out.append({**gone, "moved_to_route_id": c.get("requested_route_id")})
+        # Moved ONTO this route today — the change's stop wins.
+        if c.get("requested_route_id") == route_id:
+            d = detail.get(sid) or {}
+            riding[sid] = {
+                **d,
+                "id": sid,
+                "effective_stop": c.get("requested_stop") or d.get("drop_off_stop"),
+                "moved_in": True,
+            }
+    return list(riding.values()), moved_out
+
+
+def route_supervisor_id(org_id: str, route_id: Optional[str], date_iso: str) -> Optional[str]:
+    """The app user (supervisor) assigned to drive this route on this date, if any."""
+    if not route_id:
+        return None
+    try:
+        r = (
+            supabase.table("assignments")
+            .select("driver_id")
+            .eq("org_id", org_id)
+            .eq("route_id", route_id)
+            .eq("trip_date", date_iso)
+            .limit(1)
+            .execute()
+            .data
+        )
+        return r[0]["driver_id"] if r else None
+    except Exception:
+        return None
 
 
 def occupancy(route_id: str, date_iso: str, base: dict, incoming: dict, outgoing: dict) -> int:

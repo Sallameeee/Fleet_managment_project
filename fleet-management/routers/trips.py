@@ -21,19 +21,68 @@ from pydantic import BaseModel, Field
 import features as feature_flags
 import notifications_logic as notify
 from auth import require_permission, require_role
-from capacity_logic import org_module
+from capacity_logic import effective_roster, org_module
 from database import supabase
 
 router = APIRouter(prefix="/trips", tags=["trips"])
 
 SCHEDULE_GRACE_MIN = 5  # arrival within 5 min of the scheduled time counts as on-time
 
+# A trip can be started at most this many minutes BEFORE its scheduled start.
+# Being late is always fine (no upper bound). No scheduled time -> no gate.
+START_EARLY_WINDOW_MIN = 15
+
 # Geofence radius (meters) for auto arrival/departure detection. Named so it's
 # a one-line tune. A ping within this distance of a stop counts as "at" it.
 GEOFENCE_RADIUS_M = 75
 
-# The org operates in Egypt (UTC+2); "today" for a driver's assignments is local.
-LOCAL_TZ = timezone(timedelta(hours=2))
+# "Today" for a driver's assignments is LOCAL (Africa/Cairo, DST-aware) — see the
+# single shared definition in capacity_logic.
+from capacity_logic import LOCAL_TZ
+
+
+def _parse_hhmm(value) -> Optional[time]:
+    """Parse a DB time value ('HH:MM' / 'HH:MM:SS') into a time, or None."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, time):
+        return value
+    s = str(value)
+    for fmt in ("%H:%M:%S", "%H:%M"):
+        try:
+            return datetime.strptime(s, fmt).time()
+        except ValueError:
+            continue
+    return None
+
+
+def _start_gate(scheduled_start, trip_date: Optional[str]) -> dict:
+    """Whether a trip may be started now, given its LOCAL scheduled start time.
+
+    A trip unlocks 15 minutes before the scheduled start and stays unlocked
+    afterwards (late is fine). With no scheduled time there is no gate.
+
+    Returns a small dict the caller (endpoint or payload) can use directly:
+      * scheduled_start_time  -> 'HH:MM' or None
+      * earliest_start_time   -> 'HH:MM' or None  (scheduled - 15 min)
+      * can_start_now         -> bool
+    All times are Africa/Cairo (LOCAL_TZ) — never a fixed offset.
+    """
+    t = _parse_hhmm(scheduled_start)
+    if t is None or not trip_date:
+        return {"scheduled_start_time": None, "earliest_start_time": None, "can_start_now": True}
+    try:
+        day = date.fromisoformat(str(trip_date)[:10])
+    except ValueError:
+        return {"scheduled_start_time": None, "earliest_start_time": None, "can_start_now": True}
+    scheduled_local = datetime.combine(day, t, tzinfo=LOCAL_TZ)
+    earliest_local = scheduled_local - timedelta(minutes=START_EARLY_WINDOW_MIN)
+    now_local = datetime.now(LOCAL_TZ)
+    return {
+        "scheduled_start_time": scheduled_local.strftime("%H:%M"),
+        "earliest_start_time": earliest_local.strftime("%H:%M"),
+        "can_start_now": now_local >= earliest_local,
+    }
 
 
 def _now_iso() -> str:
@@ -142,6 +191,10 @@ def my_assignments(current_user: dict = Depends(require_role("driver"))):
     org_id = current_user["org_id"]
     driver_id = current_user["id"]
     today = datetime.now(LOCAL_TZ).date().isoformat()
+    # The start-time gate + "directions to start" are SCHOOL features. University
+    # keeps its exact previous behaviour (start any time, no directions button):
+    # the extra fields are simply omitted for non-school orgs.
+    is_school = _org_module(org_id) == "school"
 
     rows = (
         supabase.table("assignments")
@@ -159,8 +212,8 @@ def my_assignments(current_user: dict = Depends(require_role("driver"))):
     routes, vehicles = {}, {}
     if route_ids:
         routes = {
-            x["id"]: x["name"]
-            for x in supabase.table("routes").select("id, name").in_("id", route_ids).execute().data
+            x["id"]: x
+            for x in supabase.table("routes").select("id, name, start_time").in_("id", route_ids).execute().data
         }
     if vehicle_ids:
         vehicles = {
@@ -168,11 +221,26 @@ def my_assignments(current_user: dict = Depends(require_role("driver"))):
             for x in supabase.table("vehicles").select("id, bus_number").in_("id", vehicle_ids).execute().data
         }
 
-    assignments = [
-        {
+    # First stop per route (for the "Directions to start point" button) — school only.
+    first_stops: dict = {}
+    if is_school and route_ids:
+        for st in (
+            supabase.table("route_stops")
+            .select("route_id, name, lat, lng, stop_order")
+            .in_("route_id", route_ids)
+            .order("stop_order", desc=False)
+            .execute()
+            .data
+        ):
+            first_stops.setdefault(st["route_id"], st)  # ordered asc -> first wins
+
+    assignments = []
+    for r in rows:
+        route = routes.get(r.get("route_id")) or {}
+        item = {
             "assignment_id": r["id"],
             "route_id": r.get("route_id"),
-            "route_name": routes.get(r.get("route_id")),
+            "route_name": route.get("name"),
             "vehicle_id": r.get("vehicle_id"),
             "vehicle_bus_number": (vehicles.get(r.get("vehicle_id")) or {}).get("bus_number"),
             "trip_date": r.get("trip_date"),
@@ -180,8 +248,25 @@ def my_assignments(current_user: dict = Depends(require_role("driver"))):
             "start_time": r.get("start_time"),
             "end_time": r.get("end_time"),
         }
-        for r in rows
-    ]
+        if is_school:
+            # Scheduled start = the ASSIGNMENT's start_time (per-day), falling back
+            # to the ROUTE's default start_time. The 15-min gate is computed from
+            # it (Africa/Cairo). University orgs never get these fields, so the app
+            # leaves the button ungated exactly as before.
+            gate = _start_gate(r.get("start_time") or route.get("start_time"), r.get("trip_date"))
+            fs = first_stops.get(r.get("route_id"))
+            item.update(
+                {
+                    "scheduled_start_time": gate["scheduled_start_time"],
+                    "earliest_start_time": gate["earliest_start_time"],
+                    "can_start_now": gate["can_start_now"],
+                    "first_stop": (
+                        {"name": fs.get("name"), "lat": fs.get("lat"), "lng": fs.get("lng")}
+                        if fs else None
+                    ),
+                }
+            )
+        assignments.append(item)
 
     active = (
         supabase.table("trips")
@@ -245,6 +330,34 @@ def start_trip(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="This assignment belongs to another driver. You can only start your own.",
         )
+
+    # --- 2b. Time gate (SCHOOL only): no starting more than 15 min before the
+    # scheduled start. Scheduled start = the assignment's start_time, falling back
+    # to the route's default. Late is always allowed; no scheduled time = no gate.
+    # University keeps its exact prior behaviour (start any time). Enforced here so
+    # the server and the app can never disagree. ---
+    if _org_module(org_id) == "school":
+        scheduled = assignment.get("start_time")
+        if not scheduled and assignment.get("route_id"):
+            _r = (
+                supabase.table("routes")
+                .select("start_time")
+                .eq("id", assignment["route_id"])
+                .eq("org_id", org_id)
+                .limit(1)
+                .execute()
+                .data
+            )
+            scheduled = _r[0].get("start_time") if _r else None
+        gate = _start_gate(scheduled, assignment.get("trip_date"))
+        if not gate["can_start_now"]:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    f"This trip starts at {gate['scheduled_start_time']} — you can start "
+                    f"it from {gate['earliest_start_time']}."
+                ),
+            )
 
     # --- 3. Duplicate guard: one active trip per driver at a time. ---
     # If an active trip already exists for this driver OR this assignment, we do
@@ -698,14 +811,11 @@ def trip_students(trip_id: str, current_user: dict = Depends(require_role("drive
     org_id = trip["org_id"]
     _require_school_org(org_id)
 
-    students = (
-        supabase.table("passengers")
-        .select("id, name, student_phone, parent_phone, grade, class_name, drop_off_stop")
-        .eq("org_id", org_id)
-        .eq("route_id", trip["route_id"])
-        .execute()
-        .data
-    )
+    # TODAY'S EFFECTIVE roster — approved one-day change requests move children
+    # between buses, so the supervisor sees exactly who is on THIS bus today, and
+    # separately who was moved off it. Same rule the parent/student map applies.
+    trip_day = (trip.get("started_at") or "")[:10] or datetime.now(LOCAL_TZ).date().isoformat()
+    students, moved_out = effective_roster(org_id, trip["route_id"], trip_day)
     ids = [s["id"] for s in students]
     att_by_student = {}
     if ids:
@@ -737,8 +847,11 @@ def trip_students(trip_id: str, current_user: dict = Depends(require_role("drive
                 "student_phone": s.get("student_phone"),
                 "parent_phone": s.get("parent_phone"),
                 "boarded": a.get("boarded", False),
-                # Afternoon: the recorded drop-off, else the student's usual stop to prefill.
-                "drop_off_stop": a.get("drop_off_stop") or s.get("drop_off_stop"),
+                # Afternoon: the recorded drop-off, else today's EFFECTIVE stop
+                # (a moved-in child uses the stop the change request asked for).
+                "drop_off_stop": a.get("drop_off_stop") or s.get("effective_stop") or s.get("drop_off_stop"),
+                # True when an approved change put this child on your bus today.
+                "moved_in": bool(s.get("moved_in")),
             }
         )
     out.sort(key=lambda x: (x["name"] or "").lower())
@@ -748,6 +861,12 @@ def trip_students(trip_id: str, current_user: dict = Depends(require_role("drive
         "session": session,
         "route_stops": [st.get("name") for st in stops if st.get("name")],
         "students": out,
+        # Children normally on this route who ride ANOTHER bus today. Not part of
+        # attendance — shown so the supervisor can flag one who boards anyway.
+        "moved_out": [
+            {"student_id": m["id"], "name": m.get("name"), "class_name": m.get("class_name"), "grade": m.get("grade")}
+            for m in sorted(moved_out, key=lambda m: (m.get("name") or "").lower())
+        ],
     }
 
 
@@ -788,6 +907,62 @@ def record_attendance(
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Could not record attendance: {exc}")
     return {"student_id": body.student_id, "boarded": row["boarded"], "session": session, "drop_off_stop": row.get("drop_off_stop"), "trip_id": trip_id}
+
+
+class BoardingFlagIn(BaseModel):
+    student_id: str = Field(..., min_length=1)
+    note: Optional[str] = Field(None, max_length=500)
+
+
+@router.post("/{trip_id}/boarding-flag", status_code=status.HTTP_200_OK)
+def flag_boarding(
+    trip_id: str,
+    body: BoardingFlagIn,
+    current_user: dict = Depends(require_role("driver")),
+):
+    """The supervisor reports a child who boarded THIS bus even though an approved
+    one-day change moved them to another bus today. Raises a MANAGER notification
+    (school only). Does NOT record attendance — the child isn't on this roster;
+    it's a discrepancy report for the office."""
+    trip = _load_own_active_trip(trip_id, current_user)
+    org_id = trip["org_id"]
+    _require_school_org(org_id)
+
+    trip_day = (trip.get("started_at") or "")[:10] or datetime.now(LOCAL_TZ).date().isoformat()
+    # The child must actually have an approved change OFF this route today —
+    # otherwise there is nothing to flag (they'd simply be on the roster).
+    cr = (
+        supabase.table("change_requests")
+        .select("id, requested_route_id")
+        .eq("org_id", org_id)
+        .eq("student_id", body.student_id)
+        .eq("request_date", trip_day)
+        .eq("status", "approved")
+        .eq("current_route_id", trip["route_id"])
+        .limit(1)
+        .execute()
+        .data
+    )
+    if not cr:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="That student has no approved bus change off this route today.",
+        )
+
+    _s = supabase.table("passengers").select("name").eq("id", body.student_id).eq("org_id", org_id).limit(1).execute().data
+    if not _s:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="That student is not in your organization.")
+    _r = supabase.table("routes").select("name").eq("id", trip["route_id"]).limit(1).execute().data
+
+    notify.boarding_flag(
+        org_id,
+        cr[0]["id"],
+        _s[0].get("name"),
+        current_user.get("name"),
+        _r[0].get("name") if _r else None,
+        (body.note or "").strip() or None,
+    )
+    return {"flagged": True, "student_id": body.student_id, "change_request_id": cr[0]["id"]}
 
 
 @router.post("/{trip_id}/stop-visits", status_code=status.HTTP_200_OK)

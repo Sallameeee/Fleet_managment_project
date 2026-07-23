@@ -21,7 +21,7 @@ router = APIRouter(prefix="/track", tags=["tracking (public)"])
 
 # Working hours are evaluated in the org's local time. Egypt is UTC+2 (fixed
 # offset, matching the reports module). NULL hours => always-on.
-LOCAL_TZ = timezone(timedelta(hours=2))
+from capacity_logic import LOCAL_TZ  # single DST-aware Africa/Cairo zone
 
 
 def _parse_time(value):

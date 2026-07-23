@@ -27,7 +27,7 @@ VALID_TYPES = ["drivers", "trips", "kilometers", "speed"]
 # time, then converted to UTC for querying the timestamptz columns. We use a
 # FIXED +2 offset as specified; if Egypt's DST needs to be honored exactly,
 # swap this for zoneinfo.ZoneInfo("Africa/Cairo").
-LOCAL_TZ = timezone(timedelta(hours=2))
+from capacity_logic import LOCAL_TZ  # single DST-aware Africa/Cairo zone
 
 
 def _parse_types(types: str) -> list:

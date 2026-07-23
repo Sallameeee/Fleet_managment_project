@@ -169,6 +169,8 @@ export interface ManagerDriver {
   license_number?: string | null;
   license_start_date?: string | null;
   license_expiry_date?: string | null;
+  /** SCHOOL supervisors use this instead of a driving licence. */
+  national_id?: string | null;
 }
 
 export async function listDrivers(): Promise<ManagerDriver[]> {
@@ -186,6 +188,7 @@ export interface CreateDriverInput {
   license_number?: string;
   license_start_date?: string;
   license_expiry_date?: string;
+  national_id?: string;
 }
 
 export interface DriverCreateResult {
@@ -209,6 +212,7 @@ export interface UpdateDriverInput {
   license_number?: string | null;
   license_start_date?: string | null;
   license_expiry_date?: string | null;
+  national_id?: string | null;
 }
 
 export async function updateDriver(id: string, input: UpdateDriverInput): Promise<void> {
@@ -1124,6 +1128,46 @@ export async function getSchoolDirectory(): Promise<{ supervisors: DirectoryPers
   };
 }
 
+// --- Buses Today (School module) ---------------------------------------------
+// The effective roster per bus for today, reusing the SAME backend logic
+// (capacity_logic.effective_roster) as the supervisor app + parent tracking.
+
+export interface BusesTodayRider {
+  student_id: string;
+  name: string | null;
+  class_name: string | null;
+  grade: string | null;
+  drop_off_stop: string | null;
+  moved_in: boolean; // joined this bus today via an approved change
+}
+
+export interface BusesTodayMovedOut {
+  student_id: string;
+  name: string | null;
+  class_name: string | null;
+  grade: string | null;
+  to_route_name: string | null; // the bus they ride instead today
+}
+
+export interface BusToday {
+  route_id: string;
+  route_name: string | null;
+  vehicle_bus_number: string | null;
+  supervisor_name: string | null;
+  trip_status: "not_started" | "active" | "completed";
+  onboard_count: number;
+  moved_in_count: number;
+  moved_out_count: number;
+  riding: BusesTodayRider[];
+  moved_out: BusesTodayMovedOut[];
+}
+
+export async function getBusesToday(): Promise<{ date: string; count: number; buses: BusToday[] }> {
+  const res = await managerFetch("/school/buses-today");
+  if (!res.ok) throw new Error(await extractError(res, "Failed to load buses."));
+  return (await res.json()) as { date: string; count: number; buses: BusToday[] };
+}
+
 // --- Notifications (School module) -------------------------------------------
 
 export interface ManagerNotification {
@@ -1291,6 +1335,9 @@ export async function getAttendanceColumns(): Promise<{ columns: AttendanceColum
   return (await res.json()) as { columns: AttendanceColumn[]; default: string[] };
 }
 
+/** Which records the sheet includes: boarded only, not-boarded only, or all. */
+export type AttendanceStatusFilter = "present" | "absent" | "both";
+
 export interface AttendanceExportParams {
   format: "xlsx" | "pdf";
   columns: string[];
@@ -1298,6 +1345,7 @@ export interface AttendanceExportParams {
   student_id?: string;
   date_from?: string;
   date_to?: string;
+  status?: AttendanceStatusFilter;
 }
 
 /** Fetch the export as a Blob and trigger a browser download. */
@@ -1309,6 +1357,7 @@ export async function exportAttendance(p: AttendanceExportParams): Promise<void>
   if (p.student_id) q.set("student_id", p.student_id);
   if (p.date_from) q.set("date_from", p.date_from);
   if (p.date_to) q.set("date_to", p.date_to);
+  if (p.status && p.status !== "both") q.set("status", p.status);
 
   const res = await managerFetch(`/attendance/export?${q.toString()}`);
   if (!res.ok) throw new Error(await extractError(res, "Failed to export attendance."));

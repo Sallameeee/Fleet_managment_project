@@ -10,12 +10,13 @@ the student's profile/route. Org-scoped to the caller; refuses non-school orgs.
 """
 
 import io
-from datetime import date
+from datetime import date, datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 
 from auth import require_permission
+from capacity_logic import LOCAL_TZ
 from database import supabase
 
 router = APIRouter(prefix="/attendance", tags=["attendance"])
@@ -35,6 +36,37 @@ COLUMN_LABELS = {
     "student_phone": "Student phone",
 }
 DEFAULT_COLUMNS = ["student_name", "class_name", "route_name", "date", "session", "boarded", "drop_off_stop", "time"]
+
+
+def _local_hhmm(recorded_at) -> Optional[str]:
+    """`recorded_at` is stored UTC (timestamptz). Render it as HH:MM in the org's
+    LOCAL time (Africa/Cairo, DST-aware) — slicing the raw ISO string showed UTC,
+    which read an hour or two early on the sheet."""
+    if not recorded_at:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(recorded_at).replace("Z", "+00:00"))
+        if dt.tzinfo is None:  # naive value from the DB → it is UTC
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(LOCAL_TZ).strftime("%H:%M")
+    except Exception:
+        return str(recorded_at)[11:16] or None
+
+
+def _dedupe_latest(att: list) -> list:
+    """One row per (student, date, session) — the LATEST recording wins.
+
+    Attendance is upserted per (trip, student), so a student riding TWO trips in
+    the same session that day (e.g. the supervisor restarted the trip) yields two
+    rows and the sheet showed the child twice. The raw per-trip rows are kept in
+    the DB (audit); only the REPORT collapses them."""
+    best: dict = {}
+    for a in att:
+        key = (a.get("student_id"), a.get("trip_date"), a.get("session"))
+        cur = best.get(key)
+        if cur is None or str(a.get("recorded_at") or "") > str(cur.get("recorded_at") or ""):
+            best[key] = a
+    return list(best.values())
 
 
 def _require_school_org(org_id: str) -> None:
@@ -58,9 +90,13 @@ def _fetch_rows(
     student_id: Optional[str],
     date_from: Optional[date],
     date_to: Optional[date],
+    attendance_status: str = "both",
 ) -> list:
-    """Enriched attendance rows (one per student per trip/day) for the filters."""
-    q = supabase.table("attendance").select("student_id, trip_date, boarded, session, drop_off_stop, recorded_at").eq("org_id", org_id)
+    """Enriched attendance rows (one per student per DATE+SESSION) for the filters.
+
+    `attendance_status`: 'present' (boarded only) | 'absent' (not boarded) | 'both'.
+    """
+    q = supabase.table("attendance").select("student_id, trip_id, trip_date, boarded, session, drop_off_stop, recorded_at").eq("org_id", org_id)
     if student_id:
         q = q.eq("student_id", student_id)
     if date_from:
@@ -68,6 +104,14 @@ def _fetch_rows(
     if date_to:
         q = q.lte("trip_date", date_to.isoformat())
     att = q.order("trip_date", desc=False).execute().data
+
+    # Collapse repeat trips in the same session, THEN apply the present/absent
+    # filter so the filter sees each student's final status for that session.
+    att = _dedupe_latest(att)
+    if attendance_status == "present":
+        att = [a for a in att if a.get("boarded")]
+    elif attendance_status == "absent":
+        att = [a for a in att if not a.get("boarded")]
 
     sids = list({a["student_id"] for a in att})
     pax = {}
@@ -80,11 +124,27 @@ def _fetch_rows(
             .execute()
             .data
         }
-    if route_id:  # filter to one route (via the student's route)
-        att = [a for a in att if (pax.get(a["student_id"]) or {}).get("route_id") == route_id]
+
+    # The route on the SHEET is the bus the student ACTUALLY rode that record —
+    # i.e. the route of the TRIP the attendance was recorded on. On a one-day bus
+    # change this is the NEW bus, not the student's home route. Fall back to the
+    # student's profile route only when a record has no resolvable trip.
+    trip_ids = list({a.get("trip_id") for a in att if a.get("trip_id")})
+    trip_route = {}
+    if trip_ids:
+        trip_route = {
+            t["id"]: t.get("route_id")
+            for t in supabase.table("trips").select("id, route_id").in_("id", trip_ids).execute().data
+        }
+
+    def _actual_route_id(a):
+        return trip_route.get(a.get("trip_id")) or (pax.get(a["student_id"]) or {}).get("route_id")
+
+    if route_id:  # filter to one route — by the bus actually ridden that day
+        att = [a for a in att if _actual_route_id(a) == route_id]
         sids = list({a["student_id"] for a in att})
 
-    route_ids = list({(pax.get(s) or {}).get("route_id") for s in sids if (pax.get(s) or {}).get("route_id")})
+    route_ids = list({_actual_route_id(a) for a in att if _actual_route_id(a)})
     routes = {}
     if route_ids:
         routes = {r["id"]: r["name"] for r in supabase.table("routes").select("id, name").in_("id", route_ids).execute().data}
@@ -97,17 +157,17 @@ def _fetch_rows(
                 "student_name": p.get("name"),
                 "class_name": p.get("class_name"),
                 "grade": p.get("grade"),
-                "route_name": routes.get(p.get("route_id")),
+                "route_name": routes.get(_actual_route_id(a)),
                 "date": a.get("trip_date"),
                 "session": (a.get("session") or "").capitalize() or None,
                 "boarded": "Yes" if a.get("boarded") else "No",
                 "drop_off_stop": a.get("drop_off_stop"),
-                "time": (a.get("recorded_at") or "")[11:16],
+                "time": _local_hhmm(a.get("recorded_at")),
                 "parent_phone": p.get("parent_phone"),
                 "student_phone": p.get("student_phone"),
             }
         )
-    rows.sort(key=lambda x: (x["date"] or "", (x["student_name"] or "").lower()))
+    rows.sort(key=lambda x: (x["date"] or "", (x["student_name"] or "").lower(), x["session"] or ""))
     return rows
 
 
@@ -174,16 +234,28 @@ def export_attendance(
     student_id: Optional[str] = Query(None, description="Set for a single-student (e.g. monthly) report."),
     date_from: Optional[date] = Query(None),
     date_to: Optional[date] = Query(None),
+    attendance_status: str = Query(
+        "both",
+        alias="status",
+        description="Which records to include: present (boarded) | absent (not boarded) | both.",
+    ),
 ):
     org_id = current_user["org_id"]
     _require_school_org(org_id)
+
+    attendance_status = (attendance_status or "both").lower()
+    if attendance_status not in ("present", "absent", "both"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="status must be one of: present, absent, both.",
+        )
 
     cols = [c for c in (columns.split(",") if columns else DEFAULT_COLUMNS) if c in COLUMN_LABELS]
     if not cols:
         cols = DEFAULT_COLUMNS
     headers = [COLUMN_LABELS[c] for c in cols]
 
-    data = _fetch_rows(org_id, route_id, student_id, date_from, date_to)
+    data = _fetch_rows(org_id, route_id, student_id, date_from, date_to, attendance_status)
     table = [[("" if r.get(c) is None else str(r.get(c))) for c in cols] for r in data]
 
     title = "Attendance report"

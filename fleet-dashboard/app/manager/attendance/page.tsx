@@ -9,6 +9,7 @@ import {
   type AttendanceColumn,
   type ManagerRoute,
   type ManagerPassenger,
+  type AttendanceStatusFilter,
 } from "@/lib/manager";
 import { useT } from "@/lib/i18n";
 import { useToast } from "@/lib/toast";
@@ -43,6 +44,8 @@ export default function ManagerAttendancePage() {
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [format, setFormat] = useState<Fmt>("xlsx");
+  // Which records the sheet includes — boarded only / not-boarded only / all.
+  const [status, setStatus] = useState<AttendanceStatusFilter>("both");
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
@@ -99,6 +102,7 @@ export default function ManagerAttendancePage() {
         student_id: scope === "student" ? studentId : undefined,
         date_from: dateFrom,
         date_to: dateTo,
+        status,
       });
     } catch (e) {
       toast.error(e instanceof Error ? e.message : t("common.failed"));
@@ -181,6 +185,22 @@ export default function ManagerAttendancePage() {
                 </button>
               );
             })}
+          </div>
+        </div>
+
+        {/* Include: present (boarded) / absent (not boarded) / both */}
+        <div>
+          <span className="mb-2 block text-sm text-slate-300">{t("att.include")}</span>
+          <div className="inline-flex rounded-lg border border-ink-700 p-0.5">
+            {(["both", "present", "absent"] as AttendanceStatusFilter[]).map((s) => (
+              <button
+                key={s}
+                onClick={() => setStatus(s)}
+                className={"rounded-md px-3 py-1.5 text-sm font-medium transition-colors " + (status === s ? "bg-brand text-white" : "text-slate-400 hover:text-white")}
+              >
+                {s === "both" ? t("att.incBoth") : s === "present" ? t("att.incPresent") : t("att.incAbsent")}
+              </button>
+            ))}
           </div>
         </div>
 

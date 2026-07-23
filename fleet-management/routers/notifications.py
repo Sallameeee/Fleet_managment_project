@@ -1,12 +1,14 @@
 """In-app notifications (School module).
 
-One set of endpoints serves BOTH audiences, scoped by the caller's role:
+One set of endpoints serves ALL audiences, scoped by the caller's role:
   * a PARENT (role='passenger') sees audience='parent' notes addressed to them;
     read state is per-recipient on notifications.is_read.
-  * a MANAGER (any staff role) sees the org-wide audience='manager' notes; read
-    state is PER-MANAGER via the notification_reads receipt table (so one manager
-    reading does NOT clear it for the others).
-Drivers and University orgs get an empty list (never an error).
+  * a SUPERVISOR (role='driver') sees audience='supervisor' notes addressed to
+    them — same personal-inbox model as a parent (roster changes for their bus).
+  * a MANAGER (any other staff role) sees the org-wide audience='manager' notes;
+    read state is PER-MANAGER via the notification_reads receipt table (so one
+    manager reading does NOT clear it for the others).
+University orgs get an empty list (never an error).
 """
 
 from fastapi import APIRouter, Depends
@@ -21,13 +23,24 @@ _MGR_SCAN_LIMIT = 500  # cap manager rows scanned for counting/mark-all
 
 
 def _enabled(user: dict) -> bool:
-    if org_module(user.get("org_id")) != "school":
-        return False
-    return user.get("role") != "driver"
+    """School orgs only. All three audiences are served now (parents, managers and
+    supervisors); University orgs still get an empty list, never an error."""
+    return org_module(user.get("org_id")) == "school"
+
+
+def _audience_of(user: dict) -> str:
+    """Which inbox this caller reads. Order matters: a supervisor is a driver-role
+    user and must be classified BEFORE the staff/manager fallback."""
+    role = user.get("role")
+    if role == "passenger":
+        return "parent"
+    if role == "driver":
+        return "supervisor"
+    return "manager"
 
 
 def _is_manager(user: dict) -> bool:
-    return user.get("role") != "passenger"  # any staff role (drivers excluded by _enabled)
+    return _audience_of(user) == "manager"
 
 
 def _manager_read_ids(user_id: str, notif_ids: list) -> set:
@@ -61,9 +74,10 @@ def list_notifications(current_user: dict = Depends(get_current_user)):
         for r in rows:
             r["is_read"] = r["id"] in read_ids  # per-manager read state
     else:
+        # Personal inbox — parent OR supervisor; read state on the row itself.
         rows = (
             supabase.table("notifications").select("*").eq("org_id", org_id)
-            .eq("audience", "parent").eq("recipient_id", uid)
+            .eq("audience", _audience_of(current_user)).eq("recipient_id", uid)
             .order("created_at", desc=True).limit(100).execute().data
         )
     rows.sort(key=lambda r: 1 if r.get("is_read") else 0)  # stable → unread first
@@ -86,7 +100,7 @@ def unread_count(current_user: dict = Depends(get_current_user)):
         return {"unread": sum(1 for i in ids if i not in read_ids)}
     rows = (
         supabase.table("notifications").select("id").eq("org_id", org_id)
-        .eq("audience", "parent").eq("recipient_id", uid).eq("is_read", False).execute().data
+        .eq("audience", _audience_of(current_user)).eq("recipient_id", uid).eq("is_read", False).execute().data
     )
     return {"unread": len(rows)}
 
@@ -106,7 +120,7 @@ def mark_read(notification_id: str, current_user: dict = Depends(get_current_use
                 {"notification_id": notification_id, "user_id": uid}, on_conflict="notification_id,user_id"
             ).execute()
     else:
-        supabase.table("notifications").update({"is_read": True}).eq("id", notification_id).eq("org_id", org_id).eq("audience", "parent").eq("recipient_id", uid).execute()
+        supabase.table("notifications").update({"is_read": True}).eq("id", notification_id).eq("org_id", org_id).eq("audience", _audience_of(current_user)).eq("recipient_id", uid).execute()
     return {"id": notification_id, "is_read": True}
 
 
@@ -129,5 +143,5 @@ def mark_all_read(current_user: dict = Depends(get_current_user)):
                 [{"notification_id": i, "user_id": uid} for i in missing], on_conflict="notification_id,user_id"
             ).execute()
     else:
-        supabase.table("notifications").update({"is_read": True}).eq("org_id", org_id).eq("audience", "parent").eq("recipient_id", uid).eq("is_read", False).execute()
+        supabase.table("notifications").update({"is_read": True}).eq("org_id", org_id).eq("audience", _audience_of(current_user)).eq("recipient_id", uid).eq("is_read", False).execute()
     return {"updated": True}
