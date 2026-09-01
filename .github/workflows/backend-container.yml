@@ -1,0 +1,104 @@
+name: Build, test, and publish backend image
+
+on:
+  push:
+    branches: [CI]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test-push:
+    runs-on: ubuntu-latest
+    env:
+      LOCAL_IMAGE: fleet-management-backend:ci
+      DOCKERHUB_IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/fleet-management-backend
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Build the container image
+        working-directory: fleet-management
+        run: docker build --tag "$LOCAL_IMAGE" .
+
+      - name: Check Python source syntax in the image
+        run: docker run --rm "$LOCAL_IMAGE" python -m compileall -q .
+
+      - name: Start the backend container
+        # GitHub intentionally withholds repository secrets from forked pull
+        # requests. Those PRs still build and compile the image above.
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        run: |
+          docker run --detach --name fleet-management-test \
+            --env SUPABASE_URL \
+            --env SUPABASE_SERVICE_KEY \
+            --env SUPABASE_ANON_KEY \
+            --publish 8080:8080 \
+            "$LOCAL_IMAGE"
+
+      - name: Verify the running API health endpoint
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        run: |
+          for attempt in {1..20}; do
+            if curl --fail --silent --show-error http://localhost:8080/; then
+              exit 0
+            fi
+            sleep 2
+          done
+
+          echo "The API did not become healthy."
+          docker logs fleet-management-test
+          exit 1
+
+      - name: Verify Supabase connectivity from inside the container
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        run: |
+          docker exec -i fleet-management-test python - <<'PY'
+          import os
+          import httpx
+
+          url = os.environ["SUPABASE_URL"].rstrip("/")
+          for suffix in ("/rest/v1", "/rest"):
+              if url.endswith(suffix):
+                  url = url[: -len(suffix)]
+                  break
+          url += "/rest/v1/"
+          key = os.environ["SUPABASE_SERVICE_KEY"]
+          response = httpx.get(
+              url,
+              headers={"apikey": key, "Authorization": f"Bearer {key}"},
+              timeout=20.0,
+          )
+          response.raise_for_status()
+          print("Supabase REST connection succeeded.")
+          PY
+
+      - name: Show container logs if a test failed
+        if: failure()
+        run: docker logs fleet-management-test || true
+
+      - name: Remove test container
+        if: always()
+        run: docker rm --force fleet-management-test || true
+
+      - name: Log in to Docker Hub
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Tag and push verified image
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        run: |
+          docker tag "$LOCAL_IMAGE" "$DOCKERHUB_IMAGE:latest"
+          docker tag "$LOCAL_IMAGE" "$DOCKERHUB_IMAGE:sha-$GITHUB_SHA"
+          docker push "$DOCKERHUB_IMAGE:latest"
+          docker push "$DOCKERHUB_IMAGE:sha-$GITHUB_SHA"
