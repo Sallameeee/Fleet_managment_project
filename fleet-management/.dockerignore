@@ -1,0 +1,19 @@
+# Secrets and local configuration must never enter the image build context.
+.env
+.env.*
+!.env.example
+
+# Local Python and development artifacts
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+*.log
+.pytest_cache/
+.mypy_cache/
+
+# Source-control and editor files
+.git/
+.gitignore
+.vscode/
+.idea/
