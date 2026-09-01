@@ -1,0 +1,34 @@
+name: Deploy verified image to Railway
+
+on:
+  # The CI workflow only concludes successfully after the Docker Hub push has
+  # completed, so this deployment always consumes a verified published image.
+  workflow_run:
+    workflows: ["Build, test, and publish backend image"]
+    branches: [CI]
+    types: [completed]
+  # Allows an intentional manual redeploy from the Actions page.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    # Never deploy a failed CI run. A manual dispatch is an explicit redeploy.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_branch == 'CI')
+    runs-on: ubuntu-latest
+    env:
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+      RAILWAY_SERVICE: ${{ secrets.RAILWAY_SERVICE }}
+
+    steps:
+      - name: Confirm the target Railway service is available
+        run: npx -y @railway/cli@latest status --service "$RAILWAY_SERVICE" --json
+
+      - name: Redeploy the verified Docker Hub image
+        run: npx -y @railway/cli@latest redeploy --service "$RAILWAY_SERVICE" --yes
