@@ -22,7 +22,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from database import supabase
 
-# auto_error=False so we can return our own clear 401 when the header is
+# auto_error=False so we can return our own clear 401 when the header iss
 # missing, instead of FastAPI's generic "Not authenticated" response.
 bearer_scheme = HTTPBearer(auto_error=False)
 
