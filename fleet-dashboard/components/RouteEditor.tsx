@@ -861,10 +861,10 @@ export default function RouteEditor({
                             className="min-w-0 flex-1 rounded-md border border-ink-700 bg-ink-850 px-2 py-1 text-xs text-slate-100 focus:border-brand focus:outline-none"
                           />
                           <span className="flex shrink-0 flex-col">
-                            <button type="button" aria-label="Move up" disabled={i === 0} onClick={(e) => { e.stopPropagation(); moveStop(i, -1); }} className="rounded-t-md border border-ink-700 px-1.5 leading-none text-[11px] text-slate-300 hover:border-brand hover:text-white disabled:opacity-30">▲</button>
-                            <button type="button" aria-label="Move down" disabled={i === stops.length - 1} onClick={(e) => { e.stopPropagation(); moveStop(i, 1); }} className="rounded-b-md border border-t-0 border-ink-700 px-1.5 leading-none text-[11px] text-slate-300 hover:border-brand hover:text-white disabled:opacity-30">▼</button>
+                            <button type="button" aria-label="Move up" disabled={i === 0} onClick={(e) => { e.stopPropagation(); moveStop(i, -1); }} className="min-h-[22px] min-w-[34px] rounded-t-md border border-ink-700 px-2 text-[13px] leading-none text-slate-300 hover:border-brand hover:text-white disabled:opacity-30 md:min-h-0 md:min-w-0 md:px-1.5 md:text-[11px]">▲</button>
+                            <button type="button" aria-label="Move down" disabled={i === stops.length - 1} onClick={(e) => { e.stopPropagation(); moveStop(i, 1); }} className="min-h-[22px] min-w-[34px] rounded-b-md border border-t-0 border-ink-700 px-2 text-[13px] leading-none text-slate-300 hover:border-brand hover:text-white disabled:opacity-30 md:min-h-0 md:min-w-0 md:px-1.5 md:text-[11px]">▼</button>
                           </span>
-                          <button onClick={(e) => { e.stopPropagation(); removeStop(s.id); }} className="shrink-0 rounded-md border border-red-500/40 px-1.5 py-1 text-[10px] text-red-300 hover:bg-red-500/10" title={t("routes.remove")}>✕</button>
+                          <button onClick={(e) => { e.stopPropagation(); removeStop(s.id); }} className="shrink-0 rounded-md border border-red-500/40 px-2.5 py-2 text-[12px] text-red-300 hover:bg-red-500/10 md:px-1.5 md:py-1 md:text-[10px]" title={t("routes.remove")}>✕</button>
                         </div>
                         <div className="mt-1.5 flex items-center gap-3 ps-7 text-[11px] text-slate-500">
                           <label className="flex items-center gap-1">
