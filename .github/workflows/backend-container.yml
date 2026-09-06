@@ -2,7 +2,7 @@ name: Build, test, and publish backend image
 
 on:
   push:
-    branches: [CI]
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
