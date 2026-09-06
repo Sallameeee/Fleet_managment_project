@@ -102,7 +102,7 @@ export default function OrgEditForm({
               <option value="enterprise">enterprise</option>
             </select>
           </label>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <Input label={t("common.maxDevices")} type="number" min={0} value={maxDevices} onChange={(e) => setMaxDevices(e.target.value)} />
             <Input label={t("orgs.monthlyFee")} type="number" min={0} step="0.01" value={monthlyFee} onChange={(e) => setMonthlyFee(e.target.value)} />
           </div>

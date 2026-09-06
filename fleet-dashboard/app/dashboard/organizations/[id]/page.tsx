@@ -91,15 +91,15 @@ export default function OrganizationDetailPage() {
         </div>
       )}
 
-      <div className="flex items-start justify-between">
-        <div>
-          <div className="flex items-center gap-3">
-            <h1 className="text-2xl font-semibold text-white">{org.name}</h1>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-3">
+            <h1 className="break-words text-2xl font-semibold text-white">{org.name}</h1>
             <StatusBadge status={org.status} />
           </div>
           <p className="text-sm text-slate-500">{org.slug}</p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <button
             onClick={() => setEditOpen(true)}
             className="rounded-lg border border-ink-700 px-4 py-2 text-sm text-slate-300 hover:border-brand hover:text-white"
@@ -120,7 +120,7 @@ export default function OrganizationDetailPage() {
       </div>
 
       {/* Info grid */}
-      <div className="grid grid-cols-2 gap-4 rounded-xl border border-ink-800 bg-ink-900/40 p-5 text-sm sm:grid-cols-4">
+      <div className="grid grid-cols-2 gap-4 rounded-xl border border-ink-800 bg-ink-900/40 p-4 text-sm sm:p-5 md:grid-cols-4">
         <Info label={t("orgs.plan")} value={org.plan} />
         <Info label={t("orgs.module")} value={org.module === "school" ? t("orgs.moduleSchool") : t("orgs.moduleUniversity")} />
         <Info label={t("orgs.monthlyFee")} value={money(org.monthly_fee)} />
@@ -135,8 +135,8 @@ export default function OrganizationDetailPage() {
       {/* Users */}
       <section>
         <h2 className="mb-2 text-lg font-semibold text-white">{t("nav.users")} ({org.profiles.length})</h2>
-        <div className="overflow-hidden rounded-xl border border-ink-800">
-          <table className="w-full text-left text-sm">
+        <div className="overflow-x-auto rounded-xl border border-ink-800">
+          <table className="w-full min-w-[520px] text-left text-sm">
             <thead className="bg-ink-900/70 text-xs uppercase tracking-wide text-slate-400">
               <tr>
                 <th className="px-4 py-2.5">{t("common.name")}</th>
@@ -171,8 +171,8 @@ export default function OrganizationDetailPage() {
       {/* Vehicles */}
       <section>
         <h2 className="mb-2 text-lg font-semibold text-white">{t("nav.vehicles")} ({org.vehicles.length})</h2>
-        <div className="overflow-hidden rounded-xl border border-ink-800">
-          <table className="w-full text-left text-sm">
+        <div className="overflow-x-auto rounded-xl border border-ink-800">
+          <table className="w-full min-w-[520px] text-left text-sm">
             <thead className="bg-ink-900/70 text-xs uppercase tracking-wide text-slate-400">
               <tr>
                 <th className="px-4 py-2.5">{t("vehicles.busNumber")}</th>
@@ -221,7 +221,7 @@ function Info({ label, value }: { label: string; value: string }) {
   return (
     <div>
       <div className="text-xs uppercase tracking-wide text-slate-500">{label}</div>
-      <div className="mt-0.5 capitalize text-slate-200">{value}</div>
+      <div className="mt-0.5 break-words capitalize text-slate-200">{value}</div>
     </div>
   );
 }

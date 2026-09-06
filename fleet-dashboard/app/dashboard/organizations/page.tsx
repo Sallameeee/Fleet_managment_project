@@ -176,7 +176,7 @@ export default function OrganizationsPage() {
 
   return (
     <div>
-      <div className="mb-6 flex items-center justify-between">
+      <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-semibold text-white">{t("nav.organizations")}</h1>
           <p className="text-sm text-slate-400">{loading ? t("common.loading") : `${orgs.length} ${t("orgs.total")}`}</p>
@@ -195,8 +195,8 @@ export default function OrganizationsPage() {
         </div>
       )}
 
-      <div className="overflow-hidden rounded-xl border border-ink-800">
-        <table className="w-full text-left text-sm">
+      <div className="overflow-x-auto rounded-xl border border-ink-800">
+        <table className="w-full min-w-[860px] text-left text-sm">
           <thead className="bg-ink-900/70 text-xs uppercase tracking-wide text-slate-400">
             <tr>
               <th className="px-4 py-3">{t("common.name")}</th>
@@ -231,7 +231,7 @@ export default function OrganizationsPage() {
                 <td className="px-4 py-3 text-slate-300">{money(o.monthly_fee)}</td>
                 <td className="px-4 py-3 text-slate-300">{o.subscription_expiry ?? "—"}</td>
                 <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
-                  <div className="flex items-center justify-end gap-1.5">
+                  <div className="flex items-center justify-end gap-1.5 whitespace-nowrap">
                     <ActionBtn onClick={() => setEditOrg(o)} title={t("orgs.editOrg")} accent>{t("common.edit")}</ActionBtn>
                     <ActionBtn onClick={() => openView(o, "drivers")} title={t("orgs.viewDrivers")}>{t("nav.drivers")}</ActionBtn>
                     <ActionBtn onClick={() => openView(o, "users")} title={t("orgs.viewUsers")}>{t("nav.users")}</ActionBtn>
@@ -358,12 +358,12 @@ export default function OrganizationsPage() {
         ) : (
           <form id="create-org-form" onSubmit={handleCreate} className="space-y-4">
             <FormSection title={t("orgs.detailsSection")}>
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <Input label={`${t("common.name")} *`} value={form.name} onChange={(e) => update("name", e.target.value)} required />
                 <Input label={`${t("orgs.ownerUsername")} *`} value={form.username} onChange={(e) => update("username", e.target.value)} required />
               </div>
               <Input label={`${t("orgs.ownerPassword")} *`} type="password" value={form.password} onChange={(e) => update("password", e.target.value)} required minLength={6} />
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <Input label={t("common.email")} type="email" value={form.email} onChange={(e) => update("email", e.target.value)} />
                 <Input label={t("common.phone")} value={form.phone} onChange={(e) => update("phone", e.target.value)} />
               </div>
@@ -371,7 +371,7 @@ export default function OrganizationsPage() {
             </FormSection>
 
             <FormSection title={t("orgs.subscriptionSection")}>
-              <div className="grid grid-cols-3 gap-3">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                 <label className="block">
                   <span className="mb-1.5 block text-sm font-medium text-slate-300">{t("orgs.plan")}</span>
                   <select value={form.plan} onChange={(e) => update("plan", e.target.value)} className="w-full rounded-lg border border-ink-700 bg-ink-850 px-3 py-2.5 text-slate-100 focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/40">
