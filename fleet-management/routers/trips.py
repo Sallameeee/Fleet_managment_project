@@ -640,7 +640,15 @@ def cancel_trip(
     """Manager cancels a running trip (org-scoped). Idempotent: an already
     completed/cancelled trip is returned unchanged with a message."""
     org_id = current_user["org_id"]
-    trip = _load_org_trip(trip_id, org_id)
+    rows = (
+        supabase.table("trips").select("*").eq("id", trip_id).eq("org_id", org_id).limit(1).execute().data
+    )
+    if not rows:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No trip with id '{trip_id}' exists in your organization.",
+        )
+    trip = rows[0]
     if trip["status"] != "active":
         enriched = _enrich_one(trip)
         enriched["message"] = f"This trip is already {trip['status']}."
