@@ -15,6 +15,7 @@ from datetime import datetime, time, timedelta, timezone
 
 from fastapi import APIRouter, HTTPException, status
 
+import gps_filter
 from database import supabase
 
 router = APIRouter(prefix="/track", tags=["tracking (public)"])
@@ -93,14 +94,9 @@ def track(share_token: str):
     trip = trip_rows[0]
 
     # --- 4. Latest position (most recent ping). Whitelist lat/lng/recorded_at.
-    ping_rows = (
-        supabase.table("location_pings")
-        .select("lat, lng, recorded_at")
-        .eq("trip_id", trip["id"])
-        .order("recorded_at", desc=True)
-        .limit(1)
-        .execute()
-    ).data
+    # Newest ACCEPTED fix (shared GPS plausibility rule) — never a spike.
+    _pos = gps_filter.latest_position(supabase, trip["id"])
+    ping_rows = [_pos] if _pos else []
     position = None
     if ping_rows:
         p = ping_rows[0]

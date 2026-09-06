@@ -16,6 +16,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 
 from auth import require_permission
+import gps_filter
 from database import supabase
 from routers.trips import _haversine_m  # reuse the geofence haversine
 
@@ -157,6 +158,7 @@ def _build_report(
             .order("recorded_at", desc=False)
             .execute()
         ).data
+        pings = gps_filter.clean_grouped(pings)  # shared plausibility rule (no spikes/duplicates in km & speed stats)
         prev_tid = None
         prev_lat = prev_lng = None
         for p in pings:

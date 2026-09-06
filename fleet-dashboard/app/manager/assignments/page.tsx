@@ -171,7 +171,7 @@ export default function ManagerAssignmentsPage() {
 
   return (
     <div>
-      <div className="mb-6 flex items-center justify-between">
+      <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-semibold text-white">{t("nav.assignments")}</h1>
           <p className="text-sm text-slate-400">{loading ? t("common.loading") : `${assignments.length}`}</p>
@@ -196,8 +196,8 @@ export default function ManagerAssignmentsPage() {
         <div className="mb-4 rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-300">{error}</div>
       )}
 
-      <div className="overflow-hidden rounded-xl border border-ink-800">
-        <table className="w-full text-left text-sm">
+      <div className="table-scroll rounded-xl border border-ink-800">
+        <table className="w-full min-w-[900px] text-left text-sm">
           <thead className="bg-ink-900/70 text-xs uppercase tracking-wide text-slate-400">
             <tr>
               <th className="px-4 py-3">{t("common.date")}</th>

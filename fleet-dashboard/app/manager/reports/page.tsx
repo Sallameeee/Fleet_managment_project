@@ -403,8 +403,8 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 
 function Table({ head, children }: { head: string[]; children: React.ReactNode }) {
   return (
-    <div className="overflow-hidden rounded-lg border border-ink-800">
-      <table className="w-full text-left text-sm">
+    <div className="table-scroll rounded-xl border border-ink-800">
+      <table className="w-full min-w-[720px] text-left text-sm">
         <thead className="bg-ink-900/70 text-xs uppercase tracking-wide text-slate-400">
           <tr>{head.map((h) => <th key={h} className="px-4 py-2.5">{h}</th>)}</tr>
         </thead>

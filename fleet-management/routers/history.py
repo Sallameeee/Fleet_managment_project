@@ -20,6 +20,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from auth import require_permission
 from capacity_logic import org_module
+import gps_filter
 from database import supabase
 
 router = APIRouter(prefix="/history", tags=["history"])
@@ -131,6 +132,13 @@ def get_history(
         if len(chunk) < PAGE:
             break
         offset += PAGE
+    # Shared GPS plausibility rule at the read boundary (gps_filter): duplicates
+    # and physically impossible fixes (the "triangle") never reach the map.
+    for _tid in list(pings_by_trip.keys()):
+        pings_by_trip[_tid] = [
+            {"lat": p["lat"], "lng": p["lng"], "recorded_at": p["recorded_at"]}
+            for p in gps_filter.clean_pings(pings_by_trip[_tid])
+        ]
 
     # --- 2b. stop-visits for these trips (arrival + waiting time per stop) ---
     # Embedded here (not a separate /trips/{id}/stop-visits call) so it shares the

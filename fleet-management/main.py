@@ -92,3 +92,8 @@ app.include_router(parent_reports.router, dependencies=[Depends(require_feature(
 @app.get("/")
 def health_check():
     return {"status": "ok", "service": "routemind-fleet"}
+
+# Edit Logs (per-org event logging settings; shared by both modules).
+from routers import log_settings as _log_settings  # noqa: E402
+
+app.include_router(_log_settings.router)

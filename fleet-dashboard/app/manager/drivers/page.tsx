@@ -160,7 +160,7 @@ export default function ManagerDriversPage() {
 
   return (
     <div>
-      <div className="mb-6 flex items-center justify-between">
+      <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-semibold text-white">{isSchool ? t("nav.supervisors") : t("nav.drivers")}</h1>
           <p className="text-sm text-slate-400">{loading ? t("common.loading") : `${drivers.length}`}</p>
@@ -185,7 +185,7 @@ export default function ManagerDriversPage() {
         </div>
       )}
 
-      <div className="overflow-x-auto rounded-xl border border-ink-800">
+      <div className="table-scroll rounded-xl border border-ink-800">
         <table className="w-full min-w-[760px] text-left text-sm">
           <thead className="bg-ink-900/70 text-xs uppercase tracking-wide text-slate-400">
             <tr>

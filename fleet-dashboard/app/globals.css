@@ -153,3 +153,33 @@ html.light .bg-red-600 {
 html.light .hover\:bg-red-500:hover {
   background-color: #b91c1c; /* red-700 hover */
 }
+
+/* Tables on phones: the CARD scrolls sideways with native momentum, the page
+   never does. Scroll-shadow trick (background-attachment local/scroll) fades
+   the edges only while there is more to swipe — a live "there's more" cue. */
+.table-scroll {
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+  background:
+    linear-gradient(to right, rgb(var(--c-ink-900)) 35%, rgba(0, 0, 0, 0)) left / 44px 100% no-repeat local,
+    linear-gradient(to left, rgb(var(--c-ink-900)) 35%, rgba(0, 0, 0, 0)) right / 44px 100% no-repeat local,
+    linear-gradient(to right, rgba(0, 0, 0, 0.45), rgba(0, 0, 0, 0)) left / 18px 100% no-repeat scroll,
+    linear-gradient(to left, rgba(0, 0, 0, 0.45), rgba(0, 0, 0, 0)) right / 18px 100% no-repeat scroll;
+}
+html.light .table-scroll {
+  background:
+    linear-gradient(to right, rgb(var(--c-ink-900)) 35%, rgba(0, 0, 0, 0)) left / 44px 100% no-repeat local,
+    linear-gradient(to left, rgb(var(--c-ink-900)) 35%, rgba(0, 0, 0, 0)) right / 44px 100% no-repeat local,
+    linear-gradient(to right, rgba(0, 0, 0, 0.14), rgba(0, 0, 0, 0)) left / 18px 100% no-repeat scroll,
+    linear-gradient(to left, rgba(0, 0, 0, 0.14), rgba(0, 0, 0, 0)) right / 18px 100% no-repeat scroll;
+}
+.table-scroll > table { background: transparent; }
+.table-scroll thead { background: transparent; }
+/* Phone-only hint under a scrollable table (rendered by pages that opt in). */
+.table-scroll-hint { display: none; }
+@media (max-width: 767px) {
+  .table-scroll-hint { display: block; padding: 6px 12px 2px; font-size: 11px; color: rgb(var(--c-slate-500)); }
+}

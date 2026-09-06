@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 
 from auth import require_role
 from capacity_logic import earliest_request_date, read_cutoff, require_school_org, require_university_org
+import gps_filter
 from database import supabase
 from features import require_feature
 from live_logic import LOCAL_TZ, driver_live_positions, pick_current_assignment
@@ -372,14 +373,9 @@ def passenger_live(current_user: dict = Depends(require_role("passenger"))):
         if did in seen:
             continue
         seen.add(did)
-        lp = (
-            supabase.table("location_pings")
-            .select("lat, lng, recorded_at")
-            .eq("trip_id", t["id"])
-            .order("recorded_at", desc=True)
-            .limit(1)
-            .execute()
-        ).data
+        # Newest ACCEPTED fix (shared GPS plausibility rule) — never a spike.
+        _pos = gps_filter.latest_position(supabase, t["id"])
+        lp = [_pos] if _pos else []
         position = None
         online = False
         if lp:

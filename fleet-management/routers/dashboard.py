@@ -10,6 +10,7 @@ from datetime import datetime, time, timedelta, timezone
 from fastapi import APIRouter, Depends, Query
 
 from auth import get_current_user
+import gps_filter
 from database import supabase
 from routers.reports import LOCAL_TZ  # Egypt UTC+2, for month boundaries
 from routers.trips import _haversine_m  # reuse the geofence haversine
@@ -101,6 +102,7 @@ def dashboard_summary(
             .order("recorded_at", desc=False)
             .execute()
         ).data
+        pings = gps_filter.clean_grouped(pings)  # shared plausibility rule (no spikes/duplicates in km & speed stats)
         prev_tid = None
         plat = plng = None
         for p in pings:

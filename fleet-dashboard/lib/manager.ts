@@ -1578,3 +1578,42 @@ export async function setTrackingHours(
   if (!res.ok) throw new Error(await extractError(res, "Failed to save settings."));
   return (await res.json()) as TrackingHours;
 }
+
+// --- Edit Logs (per-org event logging settings; shared by both modules) -------
+
+export interface LogSettingEvent {
+  type: string;
+  label: string;
+  unit: string | null;
+  threshold_kind: "limit" | "distance" | "duration" | null;
+  help: string;
+  min: number | null;
+  max: number | null;
+  enabled: boolean;
+  threshold: number | null;
+  duration_s: number | null;
+  has_duration: boolean;
+  default_threshold: number | null;
+  explicit: boolean;
+}
+
+export interface LogSettings {
+  module: "school" | "university";
+  /** false until migration 043 adds organizations.log_settings */
+  configurable: boolean;
+  events: LogSettingEvent[];
+}
+
+export async function getLogSettings(): Promise<LogSettings> {
+  const res = await managerFetch("/log-settings");
+  if (!res.ok) throw new Error(await extractError(res, "Failed to load log settings."));
+  return (await res.json()) as LogSettings;
+}
+
+export async function patchLogSettings(
+  body: Record<string, { enabled?: boolean; threshold?: number; duration_s?: number }>,
+): Promise<LogSettings> {
+  const res = await managerFetch("/log-settings", { method: "PATCH", body: JSON.stringify(body) });
+  if (!res.ok) throw new Error(await extractError(res, "Failed to save log settings."));
+  return (await res.json()) as LogSettings;
+}

@@ -536,6 +536,19 @@ export default function RouteEditor({
   }
 
   // ---- reorder -------------------------------------------------------------
+  // Touch screens have no HTML5 drag-and-drop, so every row also gets ▲/▼
+  // buttons. Same state change as a drop, so Start/End labels recompute.
+  function moveStop(from: number, delta: number) {
+    const to = from + delta;
+    if (to < 0 || to >= stopsRef.current.length) return;
+    clearShaping();
+    setStops((s) => {
+      const c = [...s];
+      const [moved] = c.splice(from, 1);
+      c.splice(to, 0, moved);
+      return c;
+    });
+  }
   const dragIndexRef = useRef<number | null>(null);
   function onListDrop(toIndex: number) {
     const from = dragIndexRef.current;
@@ -631,9 +644,9 @@ export default function RouteEditor({
   }
 
   const circleBtn =
-    "flex h-9 w-9 items-center justify-center rounded-full border border-ink-700 bg-ink-900/95 text-white shadow-lg transition-colors hover:bg-ink-800";
+    "flex h-11 w-11 items-center justify-center rounded-full border border-ink-700 bg-ink-900/95 text-white shadow-lg transition-colors hover:bg-ink-800 md:h-9 md:w-9";
   const circleAdd =
-    "flex h-9 w-9 items-center justify-center rounded-full bg-brand text-lg font-bold leading-none text-white shadow-lg ring-2 ring-white transition hover:brightness-110";
+    "flex h-11 w-11 items-center justify-center rounded-full bg-brand text-xl font-bold leading-none text-white shadow-lg ring-2 ring-white transition hover:brightness-110 md:h-9 md:w-9 md:text-lg";
 
   const topHint = pickMode
     ? t("routes.pickHint")
@@ -650,9 +663,10 @@ export default function RouteEditor({
         <button onClick={onClose} className="text-slate-400 hover:text-white" aria-label="Close">✕</button>
       </header>
 
-      <div className="flex min-h-0 flex-1">
-        {/* Map (kept LTR so it never mirrors under Arabic/RTL) */}
-        <div dir="ltr" className="relative min-w-0 flex-1">
+      <div className="flex min-h-0 flex-1 flex-col md:flex-row">
+        {/* Map (kept LTR so it never mirrors under Arabic/RTL). On phones it takes
+            the top ~42% of the screen and the stop panel scrolls underneath. */}
+        <div dir="ltr" className="relative h-[42dvh] min-w-0 shrink-0 md:h-auto md:flex-1">
           <MapView className="h-full w-full" styleSwitcher onReady={handleMapReady} onStyleChange={handleStyleChange} />
 
           {/* left-14 clears the style-switcher button that sits at top-left */}
@@ -705,7 +719,7 @@ export default function RouteEditor({
         </div>
 
         {/* Side panel */}
-        <aside className="flex w-96 shrink-0 flex-col border-s border-ink-800 bg-ink-900/50">
+        <aside className="flex min-h-0 w-full flex-1 flex-col border-t border-ink-800 bg-ink-900/50 md:w-96 md:flex-none md:border-s md:border-t-0">
           <div className="flex-1 space-y-4 overflow-y-auto p-4 pb-4">
             {/* Section 1 — basics */}
             <section className="space-y-2">
@@ -846,6 +860,10 @@ export default function RouteEditor({
                             placeholder={role ?? t("routes.stopNamePh")}
                             className="min-w-0 flex-1 rounded-md border border-ink-700 bg-ink-850 px-2 py-1 text-xs text-slate-100 focus:border-brand focus:outline-none"
                           />
+                          <span className="flex shrink-0 flex-col">
+                            <button type="button" aria-label="Move up" disabled={i === 0} onClick={(e) => { e.stopPropagation(); moveStop(i, -1); }} className="rounded-t-md border border-ink-700 px-1.5 leading-none text-[11px] text-slate-300 hover:border-brand hover:text-white disabled:opacity-30">▲</button>
+                            <button type="button" aria-label="Move down" disabled={i === stops.length - 1} onClick={(e) => { e.stopPropagation(); moveStop(i, 1); }} className="rounded-b-md border border-t-0 border-ink-700 px-1.5 leading-none text-[11px] text-slate-300 hover:border-brand hover:text-white disabled:opacity-30">▼</button>
+                          </span>
                           <button onClick={(e) => { e.stopPropagation(); removeStop(s.id); }} className="shrink-0 rounded-md border border-red-500/40 px-1.5 py-1 text-[10px] text-red-300 hover:bg-red-500/10" title={t("routes.remove")}>✕</button>
                         </div>
                         <div className="mt-1.5 flex items-center gap-3 ps-7 text-[11px] text-slate-500">
