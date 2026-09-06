@@ -24,6 +24,7 @@ import { useToast } from "@/lib/toast";
 import Button from "@/components/Button";
 import Input from "@/components/Input";
 import Modal from "@/components/Modal";
+import RouteEditor from "@/components/RouteEditor";
 
 const emptyForm = { driver_id: "", route_id: "", vehicle_id: "", trip_date: "", shift_label: "", start_time: "", end_time: "", bus_driver_id: "" };
 
@@ -51,6 +52,10 @@ export default function ManagerAssignmentsPage() {
   const [form, setForm] = useState(emptyForm);
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  // "+ Add" next to the route select: opens the map route editor ON TOP of this
+  // form (the modal + its state stay mounted underneath), and on save comes
+  // straight back with the new route selected. Nothing typed is lost.
+  const [routeEditorOpen, setRouteEditorOpen] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -249,7 +254,23 @@ export default function ManagerAssignmentsPage() {
       <Modal open={open} onClose={() => setOpen(false)} title={editingId ? t("assign.editAssignment") : t("assign.newAssignment")}>
         <form onSubmit={handleSubmit} className="space-y-3">
           <Select label={`${isSchool ? t("common.supervisor") : t("common.driver")} *`} value={form.driver_id} onChange={(v) => setForm((f) => ({ ...f, driver_id: v }))} options={drivers.map((d) => ({ value: d.id, label: `${d.name} (${d.username})` }))} placeholder={t("assign.select")} />
-          <Select label={`${t("common.route")} *`} value={form.route_id} onChange={(v) => setForm((f) => ({ ...f, route_id: v }))} options={routes.map((r) => ({ value: r.id, label: r.name }))} placeholder={t("assign.select")} />
+          <Select
+            label={`${t("common.route")} *`}
+            value={form.route_id}
+            onChange={(v) => setForm((f) => ({ ...f, route_id: v }))}
+            options={routes.map((r) => ({ value: r.id, label: r.name }))}
+            placeholder={t("assign.select")}
+            action={
+              <button
+                type="button"
+                onClick={() => setRouteEditorOpen(true)}
+                title={t("assign.addRouteTitle")}
+                className="rounded-md border border-ink-700 px-2 py-0.5 text-xs text-slate-300 transition-colors hover:border-brand hover:text-white"
+              >
+                {t("assign.addRoute")}
+              </button>
+            }
+          />
           <Select label={`${t("common.vehicle")} *`} value={form.vehicle_id} onChange={(v) => setForm((f) => ({ ...f, vehicle_id: v }))} options={vehicles.map((v) => ({ value: v.id, label: v.bus_number }))} placeholder={t("assign.select")} />
           <Input label={`${t("assign.tripDate")} *`} type="date" value={form.trip_date} onChange={(e) => setForm((f) => ({ ...f, trip_date: e.target.value }))} required />
           <div className="grid grid-cols-2 gap-3">
@@ -273,6 +294,20 @@ export default function ManagerAssignmentsPage() {
           </div>
         </form>
       </Modal>
+
+      {/* Route editor launched from the assign form: stacks above the modal;
+          closing it (save or cancel) returns to the untouched form. */}
+      {routeEditorOpen && (
+        <RouteEditor
+          onClose={() => setRouteEditorOpen(false)}
+          onSaved={(saved) => {
+            setRouteEditorOpen(false);
+            setRoutes((rs) => (rs.some((r) => r.id === saved.id) ? rs : [...rs, saved]));
+            setForm((f) => ({ ...f, route_id: saved.id }));
+            toast.success(t("toast.created"));
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -283,16 +318,22 @@ function Select({
   onChange,
   options,
   placeholder,
+  action,
 }: {
   label: string;
   value: string;
   onChange: (v: string) => void;
   options: { value: string; label: string }[];
   placeholder?: string;
+  /** Optional control rendered at the end of the label row (e.g. "+ Add"). */
+  action?: React.ReactNode;
 }) {
   return (
     <label className="block">
-      <span className="mb-1.5 block text-sm font-medium text-slate-300">{label}</span>
+      <span className="mb-1.5 flex items-center justify-between gap-2 text-sm font-medium text-slate-300">
+        <span>{label}</span>
+        {action}
+      </span>
       <select
         value={value}
         onChange={(e) => onChange(e.target.value)}

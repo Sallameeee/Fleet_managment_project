@@ -5,16 +5,11 @@ import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import {
   getOrganization,
-  updateOrganization,
   setOrganizationStatus,
   type OrganizationDetail,
-  type OrgPatch,
 } from "@/lib/api";
 import { useT } from "@/lib/i18n";
-import Button from "@/components/Button";
-import FeatureToggles from "@/components/FeatureToggles";
-import Input from "@/components/Input";
-import Modal from "@/components/Modal";
+import OrgEditForm from "@/components/OrgEditForm";
 import StatusBadge from "@/components/StatusBadge";
 
 function money(n: number): string {
@@ -32,9 +27,6 @@ export default function OrganizationDetailPage() {
   const [error, setError] = useState<string | null>(null);
 
   const [editOpen, setEditOpen] = useState(false);
-  const [form, setForm] = useState({ plan: "basic", module: "university", enabled_features: null as string[] | null, max_devices: "", monthly_fee: "", subscription_expiry: "" });
-  const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState<string | null>(null);
   const [busyStatus, setBusyStatus] = useState(false);
 
   const load = useCallback(async () => {
@@ -52,46 +44,6 @@ export default function OrganizationDetailPage() {
   useEffect(() => {
     load();
   }, [load]);
-
-  function openEdit() {
-    if (!org) return;
-    setForm({
-      plan: org.plan as string,
-      module: (org.module as string) ?? "university",
-      // null (legacy org) → FeatureToggles shows all-on; only a real edit materializes it.
-      enabled_features: org.enabled_features ?? null,
-      max_devices: String(org.max_devices ?? ""),
-      monthly_fee: String(org.monthly_fee ?? ""),
-      subscription_expiry: org.subscription_expiry ?? "",
-    });
-    setSaveError(null);
-    setEditOpen(true);
-  }
-
-  async function handleSave(e: React.FormEvent) {
-    e.preventDefault();
-    setSaving(true);
-    setSaveError(null);
-    try {
-      const patch: OrgPatch = {
-        plan: form.plan as OrgPatch["plan"],
-        module: form.module as OrgPatch["module"],
-        max_devices: Number(form.max_devices) || 0,
-        monthly_fee: Number(form.monthly_fee) || 0,
-        subscription_expiry: form.subscription_expiry || null,
-      };
-      // Only send features if the admin actually set/toggled them (null = untouched
-      // legacy org → leave as-is unless the module changed, which the backend resets).
-      if (form.enabled_features !== null) patch.enabled_features = form.enabled_features;
-      await updateOrganization(id, patch);
-      setEditOpen(false);
-      await load();
-    } catch (e) {
-      setSaveError(e instanceof Error ? e.message : t("common.failed"));
-    } finally {
-      setSaving(false);
-    }
-  }
 
   async function toggleStatus() {
     if (!org) return;
@@ -149,7 +101,7 @@ export default function OrganizationDetailPage() {
         </div>
         <div className="flex gap-2">
           <button
-            onClick={openEdit}
+            onClick={() => setEditOpen(true)}
             className="rounded-lg border border-ink-700 px-4 py-2 text-sm text-slate-300 hover:border-brand hover:text-white"
           >
             {t("orgsd.editSubscription")}
@@ -250,78 +202,17 @@ export default function OrganizationDetailPage() {
         </div>
       </section>
 
-      {/* Edit subscription modal */}
-      <Modal open={editOpen} onClose={() => setEditOpen(false)} title={t("orgsd.editSubscription")}>
-        <form onSubmit={handleSave} className="space-y-3">
-          <label className="block">
-            <span className="mb-1.5 block text-sm font-medium text-slate-300">{t("orgs.module")}</span>
-            <select
-              value={form.module}
-              onChange={(e) => setForm((f) => ({ ...f, module: e.target.value, enabled_features: [] }))}
-              className="w-full rounded-lg border border-ink-700 bg-ink-850 px-3 py-2.5 text-slate-100 focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/40"
-            >
-              <option value="university">{t("orgs.moduleUniversity")}</option>
-              <option value="school">{t("orgs.moduleSchool")}</option>
-            </select>
-          </label>
-          <div>
-            <span className="mb-1.5 block text-sm font-medium text-slate-300">{t("orgs.features")}</span>
-            <FeatureToggles module={form.module as "university" | "school"} value={form.enabled_features} onChange={(keys) => setForm((f) => ({ ...f, enabled_features: keys }))} />
-          </div>
-          <label className="block">
-            <span className="mb-1.5 block text-sm font-medium text-slate-300">{t("orgs.plan")}</span>
-            <select
-              value={form.plan}
-              onChange={(e) => setForm((f) => ({ ...f, plan: e.target.value }))}
-              className="w-full rounded-lg border border-ink-700 bg-ink-850 px-3 py-2.5 text-slate-100 focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/40"
-            >
-              <option value="basic">basic</option>
-              <option value="pro">pro</option>
-              <option value="enterprise">enterprise</option>
-            </select>
-          </label>
-          <div className="grid grid-cols-2 gap-3">
-            <Input
-              label={t("common.maxDevices")}
-              type="number"
-              min={0}
-              value={form.max_devices}
-              onChange={(e) => setForm((f) => ({ ...f, max_devices: e.target.value }))}
-            />
-            <Input
-              label={t("orgs.monthlyFee")}
-              type="number"
-              min={0}
-              step="0.01"
-              value={form.monthly_fee}
-              onChange={(e) => setForm((f) => ({ ...f, monthly_fee: e.target.value }))}
-            />
-          </div>
-          <Input
-            label={t("orgs.subscriptionExpiry")}
-            type="date"
-            value={form.subscription_expiry}
-            onChange={(e) => setForm((f) => ({ ...f, subscription_expiry: e.target.value }))}
-          />
-          {saveError && (
-            <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-300">
-              {saveError}
-            </div>
-          )}
-          <div className="flex justify-end gap-2 pt-1">
-            <button
-              type="button"
-              onClick={() => setEditOpen(false)}
-              className="rounded-lg border border-ink-700 px-4 py-2 text-sm text-slate-300 hover:border-brand hover:text-white"
-            >
-              {t("common.cancel")}
-            </button>
-            <Button type="submit" loading={saving} className="w-auto px-6">
-              {t("common.save")}
-            </Button>
-          </div>
-        </form>
-      </Modal>
+      {/* Edit — shared sectioned, scrollable form (same as the list page). */}
+      {editOpen && (
+        <OrgEditForm
+          org={org}
+          onClose={() => setEditOpen(false)}
+          onSaved={() => {
+            setEditOpen(false);
+            load();
+          }}
+        />
+      )}
     </div>
   );
 }

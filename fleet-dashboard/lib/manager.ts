@@ -1216,10 +1216,12 @@ export interface BusToday {
   moved_out: BusesTodayMovedOut[];
 }
 
-export async function getBusesToday(): Promise<{ date: string; count: number; buses: BusToday[] }> {
-  const res = await managerFetch("/school/buses-today");
+export async function getBusesToday(date?: string): Promise<{ date: string; is_today: boolean; count: number; buses: BusToday[] }> {
+  // `date` = YYYY-MM-DD (any day, incl. future). Omit for today.
+  const q = date ? `?date=${encodeURIComponent(date)}` : "";
+  const res = await managerFetch(`/school/buses-today${q}`);
   if (!res.ok) throw new Error(await extractError(res, "Failed to load buses."));
-  return (await res.json()) as { date: string; count: number; buses: BusToday[] };
+  return (await res.json()) as { date: string; is_today: boolean; count: number; buses: BusToday[] };
 }
 
 // --- Notifications (School module) -------------------------------------------
@@ -1442,6 +1444,7 @@ export interface HistoryStopVisit {
   departure_time: string | null;
   planned_dwell_seconds: number | null;
   actual_dwell_seconds: number | null;
+  status?: "visited" | "skipped"; // 'skipped' = passed without stopping (missed)
 }
 
 export interface HistoryTrip {

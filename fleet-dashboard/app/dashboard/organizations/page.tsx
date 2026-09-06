@@ -15,9 +15,10 @@ import {
 import { startImpersonation } from "@/lib/manager";
 import { useT } from "@/lib/i18n";
 import Button from "@/components/Button";
-import FeatureToggles from "@/components/FeatureToggles";
 import Input from "@/components/Input";
 import Modal from "@/components/Modal";
+import OrgEditForm from "@/components/OrgEditForm";
+import { FormSection, ModuleFeaturesSection } from "@/components/OrgFormSections";
 import StatusBadge from "@/components/StatusBadge";
 
 const EMPTY_FORM = {
@@ -52,6 +53,9 @@ export default function OrganizationsPage() {
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   const [createdLogin, setCreatedLogin] = useState<string | null>(null);
+
+  // Edit (opens the same sectioned form used on the detail page)
+  const [editOrg, setEditOrg] = useState<Organization | null>(null);
 
   // View drivers/users
   const [viewOrg, setViewOrg] = useState<Organization | null>(null);
@@ -228,6 +232,7 @@ export default function OrganizationsPage() {
                 <td className="px-4 py-3 text-slate-300">{o.subscription_expiry ?? "—"}</td>
                 <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
                   <div className="flex items-center justify-end gap-1.5">
+                    <ActionBtn onClick={() => setEditOrg(o)} title={t("orgs.editOrg")} accent>{t("common.edit")}</ActionBtn>
                     <ActionBtn onClick={() => openView(o, "drivers")} title={t("orgs.viewDrivers")}>{t("nav.drivers")}</ActionBtn>
                     <ActionBtn onClick={() => openView(o, "users")} title={t("orgs.viewUsers")}>{t("nav.users")}</ActionBtn>
                     <ActionBtn
@@ -311,63 +316,84 @@ export default function OrganizationsPage() {
         )}
       </Modal>
 
-      {/* Create */}
-      <Modal open={modalOpen} onClose={() => setModalOpen(false)} title={t("orgs.newOrg")}>
-        {createdLogin ? (
-          <div className="space-y-4">
-            <div className="rounded-lg border border-brand/30 bg-brand/10 px-4 py-3 text-sm text-brand-sage">
-              {t("orgs.created")}
-              <div className="mt-2 select-all font-mono text-base text-white">{createdLogin}</div>
-            </div>
+      {/* Edit — same sectioned, scrollable form as the detail page. */}
+      {editOrg && (
+        <OrgEditForm
+          org={editOrg}
+          onClose={() => setEditOrg(null)}
+          onSaved={() => {
+            setEditOrg(null);
+            load();
+          }}
+        />
+      )}
+
+      {/* Create — sectioned + scrollable, with a sticky footer. */}
+      <Modal
+        open={modalOpen}
+        onClose={() => setModalOpen(false)}
+        size="lg"
+        title={t("orgs.newOrg")}
+        footer={
+          createdLogin ? (
             <div className="flex justify-end gap-2">
               <button onClick={openModal} className="rounded-lg border border-ink-700 px-4 py-2 text-sm text-slate-300 hover:border-brand hover:text-white">
                 {t("common.createAnother")}
               </button>
               <Button type="button" onClick={() => setModalOpen(false)} className="w-auto px-4">{t("common.done")}</Button>
             </div>
+          ) : (
+            <div className="flex justify-end gap-2">
+              <button type="button" onClick={() => setModalOpen(false)} className="rounded-lg border border-ink-700 px-4 py-2 text-sm text-slate-300 hover:border-brand hover:text-white">{t("common.cancel")}</button>
+              <Button type="submit" form="create-org-form" loading={creating} className="w-auto px-6">{t("common.create")}</Button>
+            </div>
+          )
+        }
+      >
+        {createdLogin ? (
+          <div className="rounded-lg border border-brand/30 bg-brand/10 px-4 py-3 text-sm text-brand-sage">
+            {t("orgs.created")}
+            <div className="mt-2 select-all font-mono text-base text-white">{createdLogin}</div>
           </div>
         ) : (
-          <form onSubmit={handleCreate} className="space-y-3">
-            <div className="grid grid-cols-2 gap-3">
-              <Input label={`${t("common.name")} *`} value={form.name} onChange={(e) => update("name", e.target.value)} required />
-              <Input label={`${t("orgs.ownerUsername")} *`} value={form.username} onChange={(e) => update("username", e.target.value)} required />
-            </div>
-            <Input label={`${t("orgs.ownerPassword")} *`} type="password" value={form.password} onChange={(e) => update("password", e.target.value)} required minLength={6} />
-            <div className="grid grid-cols-2 gap-3">
-              <Input label={t("common.email")} type="email" value={form.email} onChange={(e) => update("email", e.target.value)} />
-              <Input label={t("common.phone")} value={form.phone} onChange={(e) => update("phone", e.target.value)} />
-            </div>
-            <Input label={t("common.address")} value={form.address} onChange={(e) => update("address", e.target.value)} />
-            <label className="block">
-              <span className="mb-1.5 block text-sm font-medium text-slate-300">{t("orgs.module")}</span>
-              {/* Switching the module RESETS the feature selection (core-only for the new module). */}
-              <select value={form.module} onChange={(e) => setForm((f) => ({ ...f, module: e.target.value, enabled_features: [] }))} className="w-full rounded-lg border border-ink-700 bg-ink-850 px-3 py-2.5 text-slate-100 focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/40">
-                <option value="university">{t("orgs.moduleUniversity")}</option>
-                <option value="school">{t("orgs.moduleSchool")}</option>
-              </select>
-            </label>
-            <div>
-              <span className="mb-1.5 block text-sm font-medium text-slate-300">{t("orgs.features")}</span>
-              <FeatureToggles module={form.module as "university" | "school"} value={form.enabled_features} onChange={(keys) => setForm((f) => ({ ...f, enabled_features: keys }))} />
-            </div>
-            <div className="grid grid-cols-3 gap-3">
-              <label className="block">
-                <span className="mb-1.5 block text-sm font-medium text-slate-300">{t("orgs.plan")}</span>
-                <select value={form.plan} onChange={(e) => update("plan", e.target.value)} className="w-full rounded-lg border border-ink-700 bg-ink-850 px-3 py-2.5 text-slate-100 focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/40">
-                  <option value="basic">basic</option>
-                  <option value="pro">pro</option>
-                  <option value="enterprise">enterprise</option>
-                </select>
-              </label>
-              <Input label={t("common.maxDevices")} type="number" min={0} value={form.max_devices} onChange={(e) => update("max_devices", e.target.value)} />
-              <Input label={t("orgs.monthlyFee")} type="number" min={0} step="0.01" value={form.monthly_fee} onChange={(e) => update("monthly_fee", e.target.value)} />
-            </div>
-            <Input label={t("orgs.subscriptionExpiry")} type="date" value={form.subscription_expiry} onChange={(e) => update("subscription_expiry", e.target.value)} />
+          <form id="create-org-form" onSubmit={handleCreate} className="space-y-4">
+            <FormSection title={t("orgs.detailsSection")}>
+              <div className="grid grid-cols-2 gap-3">
+                <Input label={`${t("common.name")} *`} value={form.name} onChange={(e) => update("name", e.target.value)} required />
+                <Input label={`${t("orgs.ownerUsername")} *`} value={form.username} onChange={(e) => update("username", e.target.value)} required />
+              </div>
+              <Input label={`${t("orgs.ownerPassword")} *`} type="password" value={form.password} onChange={(e) => update("password", e.target.value)} required minLength={6} />
+              <div className="grid grid-cols-2 gap-3">
+                <Input label={t("common.email")} type="email" value={form.email} onChange={(e) => update("email", e.target.value)} />
+                <Input label={t("common.phone")} value={form.phone} onChange={(e) => update("phone", e.target.value)} />
+              </div>
+              <Input label={t("common.address")} value={form.address} onChange={(e) => update("address", e.target.value)} />
+            </FormSection>
+
+            <FormSection title={t("orgs.subscriptionSection")}>
+              <div className="grid grid-cols-3 gap-3">
+                <label className="block">
+                  <span className="mb-1.5 block text-sm font-medium text-slate-300">{t("orgs.plan")}</span>
+                  <select value={form.plan} onChange={(e) => update("plan", e.target.value)} className="w-full rounded-lg border border-ink-700 bg-ink-850 px-3 py-2.5 text-slate-100 focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/40">
+                    <option value="basic">basic</option>
+                    <option value="pro">pro</option>
+                    <option value="enterprise">enterprise</option>
+                  </select>
+                </label>
+                <Input label={t("common.maxDevices")} type="number" min={0} value={form.max_devices} onChange={(e) => update("max_devices", e.target.value)} />
+                <Input label={t("orgs.monthlyFee")} type="number" min={0} step="0.01" value={form.monthly_fee} onChange={(e) => update("monthly_fee", e.target.value)} />
+              </div>
+              <Input label={t("orgs.subscriptionExpiry")} type="date" value={form.subscription_expiry} onChange={(e) => update("subscription_expiry", e.target.value)} />
+            </FormSection>
+
+            <ModuleFeaturesSection
+              module={form.module as "university" | "school"}
+              features={form.enabled_features}
+              onModuleChange={(m) => setForm((f) => ({ ...f, module: m, enabled_features: [] }))}
+              onFeaturesChange={(keys) => setForm((f) => ({ ...f, enabled_features: keys }))}
+            />
+
             {createError && <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-300">{createError}</div>}
-            <div className="flex justify-end gap-2 pt-1">
-              <button type="button" onClick={() => setModalOpen(false)} className="rounded-lg border border-ink-700 px-4 py-2 text-sm text-slate-300 hover:border-brand hover:text-white">{t("common.cancel")}</button>
-              <Button type="submit" loading={creating} className="w-auto px-6">{t("common.create")}</Button>
-            </div>
           </form>
         )}
       </Modal>

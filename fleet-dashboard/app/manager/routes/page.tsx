@@ -129,7 +129,7 @@ export default function ManagerRoutesPage() {
             setEditorOpen(false);
             setEditRoute(null);
           }}
-          onSaved={() => {
+          onSaved={(_saved) => {
             const editing = !!editRoute;
             setEditorOpen(false);
             setEditRoute(null);

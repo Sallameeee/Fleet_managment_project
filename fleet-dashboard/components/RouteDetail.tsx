@@ -175,6 +175,11 @@ export default function RouteDetail({
                         {i + 1}
                       </span>
                       <span className="min-w-0 flex-1 truncate text-sm text-white">{s.name}</span>
+                      {(i === 0 || (i === stops.length - 1 && stops.length > 1)) && (
+                        <span className={"shrink-0 rounded-full border px-1.5 py-0.5 text-[10px] font-medium " + (i === 0 ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-300" : "border-rose-500/40 bg-rose-500/10 text-rose-300")}>
+                          {i === 0 ? t("routes.startPoint") : t("routes.endPoint")}
+                        </span>
+                      )}
                     </div>
                     <div className="mt-1 flex items-center gap-3 ps-7 text-[11px] text-slate-400">
                       <span>
