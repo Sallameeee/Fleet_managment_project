@@ -10,6 +10,7 @@ resolved current assignment.
 from datetime import datetime, time, timedelta, timezone
 from typing import Optional
 
+import gps_filter
 from database import supabase
 
 ONLINE_WINDOW = timedelta(minutes=2)
@@ -119,14 +120,9 @@ def driver_live_positions(org_id: str) -> list:
 
     out = []
     for did, (tr, on_trip) in driver_trip.items():
-        lp = (
-            supabase.table("location_pings")
-            .select("lat, lng, recorded_at")
-            .eq("trip_id", tr["id"])
-            .order("recorded_at", desc=True)
-            .limit(1)
-            .execute()
-        ).data
+        # Newest ACCEPTED fix (shared GPS plausibility rule) — never a spike.
+        _pos = gps_filter.latest_position(supabase, tr["id"])
+        lp = [_pos] if _pos else []
         position = None
         online = False
         if lp:
