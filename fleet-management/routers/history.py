@@ -45,7 +45,9 @@ def _derive_school_log(trip: dict, visits: list) -> dict:
     Session is inferred from the trip's start hour (before noon local = morning)."""
     started, ended = trip.get("started_at"), trip.get("ended_at")
     session = "morning" if _local_hour(started) < 12 else "afternoon"
-    arrivals = sorted(v["arrival_time"] for v in visits if v.get("arrival_time"))
+    # A SKIPPED stop was never actually reached, so it must not count as an
+    # arrival when deriving pickup / school-arrival times.
+    arrivals = sorted(v["arrival_time"] for v in visits if v.get("arrival_time") and v.get("status") != "skipped")
     first = arrivals[0] if arrivals else None
     last = arrivals[-1] if arrivals else None
     if session == "morning":
@@ -136,14 +138,18 @@ def get_history(
     # not existing yet (older DBs) and of trips with no visits (older trips).
     visits_by_trip = defaultdict(list)
     try:
-        sv_rows = (
-            supabase.table("stop_visits")
-            .select("trip_id, stop_id, stop_order, arrival_time, departure_time, planned_dwell_seconds, actual_dwell_seconds")
-            .in_("trip_id", trip_ids)
-            .order("trip_id", desc=False)
-            .order("stop_order", desc=False)
-            .execute()
-        ).data
+        _sv_base = "trip_id, stop_id, stop_order, arrival_time, departure_time, planned_dwell_seconds, actual_dwell_seconds"
+        try:
+            sv_rows = (
+                supabase.table("stop_visits").select(_sv_base + ", status")
+                .in_("trip_id", trip_ids).order("trip_id", desc=False).order("stop_order", desc=False).execute()
+            ).data
+        except Exception:
+            # migration 036 (status column) not applied yet — legacy shape.
+            sv_rows = (
+                supabase.table("stop_visits").select(_sv_base)
+                .in_("trip_id", trip_ids).order("trip_id", desc=False).order("stop_order", desc=False).execute()
+            ).data
         sv_stop_ids = list({v["stop_id"] for v in sv_rows if v.get("stop_id")})
         sv_names = {}
         if sv_stop_ids:
@@ -161,6 +167,7 @@ def get_history(
                     "departure_time": v.get("departure_time"),
                     "planned_dwell_seconds": v.get("planned_dwell_seconds"),
                     "actual_dwell_seconds": v.get("actual_dwell_seconds"),
+                    "status": v.get("status") or "visited",
                 }
             )
     except Exception:

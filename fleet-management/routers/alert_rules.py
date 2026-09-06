@@ -19,6 +19,50 @@ from database import supabase
 
 router = APIRouter(prefix="/alert-rules", tags=["alert-rules"])
 
+# Sensible starter thresholds so a SCHOOL org's Logs/Alerts collect events out of
+# the box (detection is a no-op without a rule). speeding = km/h, off_route = m.
+SCHOOL_DEFAULT_RULES = [
+    {"name": "Speeding (default)", "type": "speeding", "threshold": 80},
+    {"name": "Off-route (default)", "type": "off_route", "threshold": 300},
+]
+
+
+def ensure_default_alert_rules(org_id: str) -> None:
+    """Give a SCHOOL org default speeding/off-route rules if it has NONE of that
+    type yet — so detection has thresholds and the Logs feed actually collects
+    events. Idempotent and best-effort: never raises into the caller, and only
+    adds a default for a type the org has no rule for (so a manager who deleted or
+    customised a rule is never overridden). University orgs are untouched — they
+    manage their own rules on the Alerts page.
+    """
+    try:
+        from capacity_logic import org_module
+
+        if org_module(org_id) != "school":
+            return
+        existing = supabase.table("alert_rules").select("type").eq("org_id", org_id).execute().data
+        have = {r.get("type") for r in existing}
+        missing = [d for d in SCHOOL_DEFAULT_RULES if d["type"] not in have]
+        if not missing:
+            return
+        supabase.table("alert_rules").insert(
+            [
+                {
+                    "org_id": org_id,
+                    "name": d["name"],
+                    "type": d["type"],
+                    "threshold": d["threshold"],
+                    "target_kind": "all",
+                    "notify_panel": True,
+                    "is_active": True,
+                }
+                for d in missing
+            ]
+        ).execute()
+    except Exception:
+        pass  # never block the caller (e.g. trip start) on defaults provisioning
+
+
 ALERT_TYPES = {"speeding", "off_route", "short_stop", "offline"}
 TARGET_KINDS = {"all", "vehicles", "drivers"}
 # Types whose threshold is meaningful (and required, > 0). short_stop uses the

@@ -133,10 +133,16 @@ class PingIn(BaseModel):
 class StopVisitIn(BaseModel):
     """The app reports reaching a stop (arrival) and, on departure, how long it
     actually stayed. Called once on arrival (departure omitted) and again on
-    departure (with departure_time). Idempotent per (trip, stop)."""
+    departure (with departure_time). Idempotent per (trip, stop).
+
+    `skipped=true` records that the bus PASSED this stop without stopping (the
+    driver reached a later stop) — SHARED behaviour for both modules. arrival_time
+    then carries the moment it was passed; no departure/dwell, and no arrival
+    notification is sent."""
     stop_id: str = Field(..., min_length=1)
     arrival_time: datetime
     departure_time: Optional[datetime] = None
+    skipped: bool = False
 
 
 def _enrich(trip: dict, driver_name=None, route_name=None,
@@ -444,6 +450,12 @@ def start_trip(
         )
 
     trip = result.data[0]
+    # School only, best-effort: make sure the org has default speeding/off-route
+    # rules so the Logs feed collects events (detection is a no-op without a rule).
+    # Idempotent; never overrides a manager's own/edited rules; University untouched.
+    from routers.alert_rules import ensure_default_alert_rules
+
+    ensure_default_alert_rules(org_id)
     # School only, best-effort: tell each parent whose child is on this bus today
     # that "<child>'s bus has started" (deduped per trip+parent).
     notify.trip_started(trip)
@@ -587,6 +599,84 @@ def _compute_trip_performance(trip: dict) -> None:
         ).execute()
     except Exception:
         pass  # metrics are best-effort; never fail trip-end
+
+
+def cancel_active_trips(org_id: str, *, assignment_id: Optional[str] = None,
+                        trip_id: Optional[str] = None) -> list:
+    """Mark every ACTIVE trip matching the filter as `cancelled` (org-scoped).
+
+    SHARED (school + university): this is THE cancel mechanism. It is called
+    when a manager deletes an assignment that is currently being driven, and by
+    POST /trips/{id}/cancel. Once a trip is `cancelled`:
+      * the driver app's pings are rejected (403 by _load_own_active_trip),
+      * GET /trips/{id}/status reports `cancelled` so the app resets itself,
+      * /my-assignments no longer returns it as `active_trip`.
+    Returns the updated trip rows (possibly empty). Never raises — a failure
+    here must not block the caller's own operation (e.g. the assignment delete).
+    """
+    try:
+        q = (
+            supabase.table("trips")
+            .update({"status": "cancelled", "ended_at": _now_iso()})
+            .eq("org_id", org_id)
+            .eq("status", "active")
+        )
+        if assignment_id is not None:
+            q = q.eq("assignment_id", assignment_id)
+        if trip_id is not None:
+            q = q.eq("id", trip_id)
+        if assignment_id is None and trip_id is None:
+            return []  # never cancel an org's every trip by accident
+        return q.execute().data or []
+    except Exception:
+        return []
+
+
+@router.post("/{trip_id}/cancel")
+def cancel_trip(
+    trip_id: str,
+    current_user: dict = Depends(require_permission("manage_trips")),
+):
+    """Manager cancels a running trip (org-scoped). Idempotent: an already
+    completed/cancelled trip is returned unchanged with a message."""
+    org_id = current_user["org_id"]
+    trip = _load_org_trip(trip_id, org_id)
+    if trip["status"] != "active":
+        enriched = _enrich_one(trip)
+        enriched["message"] = f"This trip is already {trip['status']}."
+        return enriched
+    rows = cancel_active_trips(org_id, trip_id=trip_id)
+    if not rows:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Could not cancel trip.",
+        )
+    return _enrich_one(rows[0])
+
+
+@router.get("/{trip_id}/status")
+def trip_status(trip_id: str, current_user: dict = Depends(require_role("driver"))):
+    """Lightweight liveness check for the driver app's running trip. Unlike the
+    ping path this answers 200 for ANY status so the app can tell `cancelled`
+    (manager cancelled it -> reset the UI) from `completed`. 404 if the trip
+    does not exist in the caller's org (or is another driver's — same message
+    so ids can't be probed)."""
+    org_id = current_user["org_id"]
+    rows = (
+        supabase.table("trips")
+        .select("id, driver_id, status, ended_at")
+        .eq("id", trip_id)
+        .eq("org_id", org_id)
+        .limit(1)
+        .execute()
+        .data
+    )
+    if not rows or rows[0]["driver_id"] != current_user["id"]:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No trip with id '{trip_id}' exists in your organization.",
+        )
+    return {"id": rows[0]["id"], "status": rows[0]["status"], "ended_at": rows[0].get("ended_at")}
 
 
 def _load_own_active_trip(trip_id: str, current_user: dict) -> dict:
@@ -769,6 +859,9 @@ class AttendanceIn(BaseModel):
     student_id: str = Field(..., min_length=1)
     boarded: bool
     drop_off_stop: Optional[str] = None  # afternoon: the stop the student got off at
+    # Undo/correct a mistake: delete this student's record for the trip so they go
+    # back to "not marked yet". (boarded is ignored when clear=true.)
+    clear: bool = False
 
 
 def _trip_session(trip: dict) -> str:
@@ -835,9 +928,22 @@ def trip_students(trip_id: str, current_user: dict = Depends(require_role("drive
     )
     session = _trip_session(trip)
 
+    # Route-stop order, so the roster is sorted the way the bus reaches the stops.
+    stop_order = {(st.get("name") or "").strip().lower(): st.get("stop_order") for st in stops}
+    _LAST = 10**9  # students with no/unknown stop sort to the end
+
     out = []
     for s in students:
-        a = att_by_student.get(s["id"]) or {}
+        a = att_by_student.get(s["id"])  # None → this student has NOT been marked yet
+        # Tri-state so the app can move MARKED students to a "Checked" section and
+        # tell "not marked yet" apart from "marked absent":
+        #   present  = a row exists and boarded=true
+        #   absent   = a row exists and boarded=false (explicitly not on the bus)
+        #   None     = no row yet (still to mark)
+        attendance_status = None
+        if a is not None:
+            attendance_status = "present" if a.get("boarded") else "absent"
+        stop_name = (a or {}).get("drop_off_stop") or s.get("effective_stop") or s.get("drop_off_stop")
         out.append(
             {
                 "student_id": s["id"],
@@ -846,15 +952,17 @@ def trip_students(trip_id: str, current_user: dict = Depends(require_role("drive
                 "grade": s.get("grade"),
                 "student_phone": s.get("student_phone"),
                 "parent_phone": s.get("parent_phone"),
-                "boarded": a.get("boarded", False),
+                "boarded": bool((a or {}).get("boarded", False)),
+                "attendance_status": attendance_status,
                 # Afternoon: the recorded drop-off, else today's EFFECTIVE stop
                 # (a moved-in child uses the stop the change request asked for).
-                "drop_off_stop": a.get("drop_off_stop") or s.get("effective_stop") or s.get("drop_off_stop"),
+                "drop_off_stop": stop_name,
                 # True when an approved change put this child on your bus today.
                 "moved_in": bool(s.get("moved_in")),
             }
         )
-    out.sort(key=lambda x: (x["name"] or "").lower())
+    # Sort by the route order of each student's stop, then by name.
+    out.sort(key=lambda x: (stop_order.get((x["drop_off_stop"] or "").strip().lower(), _LAST) or _LAST, (x["name"] or "").lower()))
     return {
         "trip_id": trip_id,
         "count": len(out),
@@ -888,6 +996,14 @@ def record_attendance(
     if not st.data:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="That student is not in your organization.")
 
+    # Undo / correct a mistake: remove the record so the student is unmarked again.
+    if body.clear:
+        try:
+            supabase.table("attendance").delete().eq("trip_id", trip_id).eq("student_id", body.student_id).execute()
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Could not clear attendance: {exc}")
+        return {"student_id": body.student_id, "attendance_status": None, "trip_id": trip_id}
+
     trip_date = (trip.get("started_at") or "")[:10] or datetime.now(LOCAL_TZ).date().isoformat()
     # Only the afternoon (drop-off) session records WHERE the student got off.
     session = _trip_session(trip)
@@ -906,7 +1022,14 @@ def record_attendance(
         row = supabase.table("attendance").upsert(payload, on_conflict="trip_id,student_id").execute().data[0]
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Could not record attendance: {exc}")
-    return {"student_id": body.student_id, "boarded": row["boarded"], "session": session, "drop_off_stop": row.get("drop_off_stop"), "trip_id": trip_id}
+    return {
+        "student_id": body.student_id,
+        "boarded": row["boarded"],
+        "attendance_status": "present" if row["boarded"] else "absent",
+        "session": session,
+        "drop_off_stop": row.get("drop_off_stop"),
+        "trip_id": trip_id,
+    }
 
 
 class BoardingFlagIn(BaseModel):
@@ -998,7 +1121,7 @@ def record_stop_visit(
     stop = st[0]
 
     arrival = body.arrival_time
-    departure = body.departure_time
+    departure = None if body.skipped else body.departure_time
     if arrival.tzinfo is None:
         arrival = arrival.replace(tzinfo=timezone.utc)
     if departure is not None and departure.tzinfo is None:
@@ -1016,6 +1139,7 @@ def record_stop_visit(
         "departure_time": departure.isoformat() if departure else None,
         "planned_dwell_seconds": (stop["dwell_minutes"] or 0) * 60,
         "actual_dwell_seconds": actual,
+        "status": "skipped" if body.skipped else "visited",
     }
     try:
         row = (
@@ -1025,14 +1149,28 @@ def record_stop_visit(
             .data[0]
         )
     except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Could not record stop visit: {exc}",
-        )
-    # School only, best-effort: notify parents whose child's drop-off stop is THIS
-    # stop that "<child>'s bus has arrived" (deduped per trip+student, so the
-    # arrival + departure calls for the same stop don't double-notify).
-    notify.child_arrived(trip, body.stop_id)
+        # Resilient to deploy order: if migration 036 (stop_visits.status) hasn't
+        # run yet, retry WITHOUT the new column so normal visit recording keeps
+        # working. Skipped stops just stay unmarked until the migration is applied.
+        if "status" in str(exc):
+            try:
+                row = (
+                    supabase.table("stop_visits")
+                    .upsert({k: v for k, v in payload.items() if k != "status"}, on_conflict="trip_id,stop_id")
+                    .execute()
+                    .data[0]
+                )
+            except Exception as exc2:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Could not record stop visit: {exc2}")
+        else:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Could not record stop visit: {exc}")
+    # A SKIPPED stop was never reached — do NOT fire the arrival notification.
+    # (child_arrived is already school-gated; this also keeps a school bus from
+    # telling parents "arrived" at a stop it drove past. University never hits it.)
+    if not body.skipped:
+        # School only, best-effort: notify parents whose child's drop-off stop is
+        # THIS stop that "<child>'s bus has arrived" (deduped per trip+student).
+        notify.child_arrived(trip, body.stop_id)
     return row
 
 
@@ -1045,15 +1183,18 @@ def list_stop_visits(
     org_id = current_user["org_id"]
     _load_org_trip(trip_id, org_id)  # org-scope guard
 
-    visits = (
-        supabase.table("stop_visits")
-        .select("id, stop_id, stop_order, arrival_time, departure_time, planned_dwell_seconds, actual_dwell_seconds")
-        .eq("trip_id", trip_id)
-        .eq("org_id", org_id)
-        .order("stop_order", desc=False)
-        .execute()
-        .data
-    )
+    base_cols = "id, stop_id, stop_order, arrival_time, departure_time, planned_dwell_seconds, actual_dwell_seconds"
+    try:
+        visits = (
+            supabase.table("stop_visits").select(base_cols + ", status")
+            .eq("trip_id", trip_id).eq("org_id", org_id).order("stop_order", desc=False).execute().data
+        )
+    except Exception:
+        # migration 036 (status column) not applied yet — read the legacy shape.
+        visits = (
+            supabase.table("stop_visits").select(base_cols)
+            .eq("trip_id", trip_id).eq("org_id", org_id).order("stop_order", desc=False).execute().data
+        )
     stop_ids = {v["stop_id"] for v in visits if v.get("stop_id")}
     names = {}
     if stop_ids:
@@ -1355,18 +1496,24 @@ def _emit_alert(trip, type_, lat, lng, detail, occurred_dt, seen, summary, count
 def _detect_speeding(trip, window, predecessor, srules, seen, summary) -> None:
     """Rising-edge speeding over the window, one alert per incident per rule.
     `srules` is already filtered to applicable speeding rules with a threshold."""
+    # GPS speed is stored in METERS/SECOND (Geolocator), but the rule threshold is
+    # in KM/H — convert before comparing, or real driving (≤24 m/s ≈ 86 km/h) would
+    # never exceed an 80 "km/h" limit and speeding would never fire.
+    MPS_TO_KMH = 3.6
+
+    def _kmh(mps):
+        return None if mps is None else mps * MPS_TO_KMH
+
     for r in srules:
         t = float(r["threshold"])
-        prev_over = bool(
-            predecessor and predecessor["speed"] is not None
-            and predecessor["speed"] > t
-        )
+        pred_kmh = _kmh(predecessor["speed"]) if predecessor else None
+        prev_over = bool(pred_kmh is not None and pred_kmh > t)
         for p in window:
-            spd = p["speed"]
-            cur_over = spd is not None and spd > t
+            spd_kmh = _kmh(p["speed"])
+            cur_over = spd_kmh is not None and spd_kmh > t
             if cur_over and not prev_over:
                 detail = (
-                    f"Speed {spd:.0f} km/h exceeded limit {t:.0f} km/h "
+                    f"Speed {spd_kmh:.0f} km/h exceeded limit {t:.0f} km/h "
                     f"(rule '{r['name']}')"
                 )
                 _emit_alert(trip, "speeding", p["lat"], p["lng"], detail,

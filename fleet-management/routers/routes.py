@@ -309,9 +309,11 @@ def delete_route(
 ):
     """Delete a route and its stops. Blocked if any assignment still uses it.
 
-    Historical trips keep their route_id (route_name just shows blank for them);
-    we only guard against assignments, which are the forward-looking schedule and
-    would break if their route vanished.
+    Historical trips keep their route_id column but it's nulled out (route_name
+    just shows blank for them going forward); we only guard against assignments,
+    which are the forward-looking schedule and would break if their route
+    vanished. SHARED logic — identical for school and university, no module
+    branching: a route is a route regardless of org module.
     """
     org_id = current_user["org_id"]
     _get_owned_route(route_id, org_id)  # 404 if not ours
@@ -332,6 +334,33 @@ def delete_route(
             ),
         )
 
-    supabase.table("route_stops").delete().eq("route_id", route_id).execute()
-    supabase.table("routes").delete().eq("id", route_id).eq("org_id", org_id).execute()
+    # A single delete on `routes` — route_stops cascades (route_stops.route_id is
+    # ON DELETE CASCADE), so this is ATOMIC: either the route AND its stops are
+    # both gone, or NEITHER is touched. (The old code deleted route_stops as a
+    # separate statement first, so a later failure on the routes delete left
+    # stops gone but the route stranded — that partial state can no longer
+    # happen.)
+    try:
+        result = (
+            supabase.table("routes")
+            .delete()
+            .eq("id", route_id)
+            .eq("org_id", org_id)
+            .execute()
+        )
+    except Exception as exc:
+        # A remaining reference we don't already check above (or migration 037
+        # not yet applied, so trips.route_id still RESTRICTs) — report clearly
+        # instead of an unhandled 500 / "failed to fetch".
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "This route couldn't be deleted because other records still "
+                f"reference it: {exc}"
+            ),
+        )
+    if not result.data:
+        # Ownership was already verified above, so this means it was deleted
+        # (or removed) between the check and here — treat as already-gone.
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Route not found.")
     return {"deleted": route_id}
