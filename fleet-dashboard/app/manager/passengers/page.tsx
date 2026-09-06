@@ -129,7 +129,7 @@ export default function ManagerPassengersPage() {
         ? {
             name: form.name.trim(),
             email: form.parent_email.trim(),
-            route_id: form.route_id,
+            route_id: form.route_id || undefined, // no route yet is allowed
             parent_email: form.parent_email.trim(),
             parent_phone: form.parent_phone.trim() || undefined,
             student_phone: form.student_phone.trim() || undefined,
@@ -137,7 +137,7 @@ export default function ManagerPassengersPage() {
             class_name: form.class_name.trim() || undefined,
             drop_off_stop: form.drop_off_stop.trim() || undefined,
           }
-        : { name: form.name.trim(), email: form.email.trim(), university_id: form.university_id.trim() || undefined, route_id: form.route_id };
+        : { name: form.name.trim(), email: form.email.trim(), university_id: form.university_id.trim() || undefined, route_id: form.route_id || undefined };
       const res = await createPassenger(payload);
       setCreated(res);
       toast.success(t("toast.created"));
@@ -175,7 +175,7 @@ export default function ManagerPassengersPage() {
       const patch = isSchool
         ? {
             name: eForm.name.trim(),
-            route_id: eForm.route_id,
+            route_id: eForm.route_id || null, // empty = clear the route
             is_active: eForm.is_active,
             parent_email: eForm.parent_email.trim() || null,
             parent_phone: eForm.parent_phone.trim() || null,
@@ -184,7 +184,7 @@ export default function ManagerPassengersPage() {
             class_name: eForm.class_name.trim() || null,
             drop_off_stop: eForm.drop_off_stop.trim() || null,
           }
-        : { name: eForm.name.trim(), university_id: eForm.university_id.trim() || null, route_id: eForm.route_id, is_active: eForm.is_active };
+        : { name: eForm.name.trim(), university_id: eForm.university_id.trim() || null, route_id: eForm.route_id || null, is_active: eForm.is_active };
       await updatePassenger(editP.id, patch);
       setEditP(null);
       toast.success(t("toast.saved"));
@@ -284,7 +284,7 @@ export default function ManagerPassengersPage() {
                 <td className="px-4 py-3 font-medium text-white">{p.name}</td>
                 <td className="px-4 py-3 text-slate-400">{isSchool ? (p.class_name ?? "—") : (p.university_id ?? "—")}</td>
                 <td className="px-4 py-3 text-slate-400">{isSchool ? (p.parent_phone ?? "—") : p.email}</td>
-                <td className="px-4 py-3 text-slate-300">{p.route_name ?? "—"}</td>
+                <td className="px-4 py-3 text-slate-300">{p.route_name ?? <span className="text-slate-500">{t("common.notDefined")}</span>}</td>
                 <td className="px-4 py-3"><StatusBadge status={p.is_active ? "active" : "inactive"} /></td>
                 <td className="px-4 py-3">
                   <div className="flex items-center justify-end gap-1.5">
@@ -344,9 +344,10 @@ export default function ManagerPassengersPage() {
               </div>
             )}
             <label className="block">
-              <span className="mb-1.5 block text-sm font-medium text-slate-300">{t("pax.route")} *</span>
+              <span className="mb-1.5 block text-sm font-medium text-slate-300">{t("pax.route")} <span className="font-normal text-slate-500">({t("common.optional")})</span></span>
               {/* Changing the route clears the drop-off stop (it belongs to a route). */}
               <RouteAutocomplete routes={routes} value={form.route_id} onChange={(id) => setForm((f) => ({ ...f, route_id: id, drop_off_stop: "" }))} />
+              <span className="mt-1 block text-[11px] text-slate-500">{t("pax.routeOptionalHint")}</span>
             </label>
             {isSchool && (
               <label className="block">
@@ -357,7 +358,7 @@ export default function ManagerPassengersPage() {
             {createError && <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-300">{createError}</div>}
             <div className="flex justify-end gap-2 pt-1">
               <button type="button" onClick={() => setOpen(false)} className="rounded-lg border border-ink-700 px-4 py-2 text-sm text-slate-300 hover:border-brand hover:text-white">{t("common.cancel")}</button>
-              <Button type="submit" loading={creating} className="w-auto px-6" disabled={!form.route_id}>{t("common.create")}</Button>
+              <Button type="submit" loading={creating} className="w-auto px-6">{t("common.create")}</Button>
             </div>
           </form>
         )}
@@ -384,7 +385,7 @@ export default function ManagerPassengersPage() {
               <Input label={t("pax.universityId")} value={eForm.university_id} onChange={(e) => setEForm((f) => ({ ...f, university_id: e.target.value }))} />
             )}
             <label className="block">
-              <span className="mb-1.5 block text-sm font-medium text-slate-300">{t("pax.route")}</span>
+              <span className="mb-1.5 block text-sm font-medium text-slate-300">{t("pax.route")} <span className="font-normal text-slate-500">({t("common.optional")})</span></span>
               <RouteAutocomplete routes={routes} value={eForm.route_id} onChange={(id) => setEForm((f) => ({ ...f, route_id: id, drop_off_stop: "" }))} />
             </label>
             {isSchool && (
@@ -452,8 +453,19 @@ function RouteAutocomplete({ routes, value, onChange }: { routes: ManagerRoute[]
         onChange={(e) => { setOpen(true); setQuery(e.target.value); }}
         onBlur={() => window.setTimeout(() => setOpen(false), 150)}
         placeholder={t("pax.searchRoute")}
-        className="w-full rounded-lg border border-ink-700 bg-ink-850 px-3 py-2.5 text-slate-100 focus:border-brand focus:outline-none"
+        className="w-full rounded-lg border border-ink-700 bg-ink-850 px-3 py-2.5 pe-9 text-slate-100 focus:border-brand focus:outline-none"
       />
+      {selected && !open && (
+        <button
+          type="button"
+          onClick={() => { onChange(""); setQuery(""); }}
+          title={t("pax.clearRoute")}
+          aria-label={t("pax.clearRoute")}
+          className="absolute end-2 top-1/2 -translate-y-1/2 rounded-md px-1.5 text-slate-400 hover:bg-ink-800 hover:text-white"
+        >
+          ✕
+        </button>
+      )}
       {open && matches.length > 0 && (
         <ul className="absolute z-10 mt-1 max-h-56 w-full overflow-auto rounded-lg border border-ink-700 bg-ink-900 shadow-xl">
           {matches.map((r) => (

@@ -954,7 +954,7 @@ export interface CreatePassengerInput {
   name: string;
   email: string;
   university_id?: string;
-  route_id: string;
+  route_id?: string; // optional: omit/empty = no route yet ("Not defined")
   // School module (students):
   parent_phone?: string;
   parent_email?: string;
@@ -1011,7 +1011,7 @@ export async function createPassenger(input: CreatePassengerInput): Promise<Pass
 export interface UpdatePassengerInput {
   name?: string;
   university_id?: string | null;
-  route_id?: string;
+  route_id?: string | null; // null = clear the route
   is_active?: boolean;
   parent_phone?: string | null;
   parent_email?: string | null;

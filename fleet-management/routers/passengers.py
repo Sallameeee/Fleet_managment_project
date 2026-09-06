@@ -36,7 +36,10 @@ class PassengerCreate(BaseModel):
     name: str = Field(..., min_length=1)
     email: str = Field(..., min_length=3)  # login email (parent's email in school orgs)
     university_id: Optional[str] = None
-    route_id: str = Field(..., min_length=1)
+    # OPTIONAL: a passenger/student may be created before their route exists.
+    # Lists/details then show "Not defined" and the app shows "No route
+    # assigned yet"; a route can be assigned later via PATCH.
+    route_id: Optional[str] = None
     # School module (students) — all optional so University is unaffected.
     parent_phone: Optional[str] = None
     parent_email: Optional[str] = None
@@ -49,6 +52,8 @@ class PassengerCreate(BaseModel):
 class PassengerUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=1)
     university_id: Optional[str] = None
+    # Send a route id/name to (re)assign; send null or "" to CLEAR the route.
+    # Omitting the field leaves it untouched.
     route_id: Optional[str] = None
     is_active: Optional[bool] = None
     parent_phone: Optional[str] = None
@@ -67,7 +72,7 @@ class BulkRow(BaseModel):
     name: str = Field(..., min_length=1)
     email: str = Field(..., min_length=3)
     university_id: Optional[str] = None
-    route: str = Field(..., min_length=1)  # route id OR route name
+    route: Optional[str] = None  # route id OR route name; blank = no route yet
 
 
 class BulkRequest(BaseModel):
@@ -81,9 +86,12 @@ def _delete_auth_user(user_id: str) -> None:
         pass
 
 
-def _resolve_route(org_id: str, value: str) -> Optional[str]:
+def _resolve_route(org_id: str, value: Optional[str]) -> Optional[str]:
     """Resolve a route by id first, then by name, within the org. Returns the
-    route id or None."""
+    route id or None (also None for an empty/blank value)."""
+    if not value or not value.strip():
+        return None
+    value = value.strip()
     # Try by id only when it looks like a UUID (avoids a 22P02 error when a plain
     # route NAME is passed to an id/uuid column in the bulk path).
     if "-" in value and len(value) >= 32:
@@ -96,12 +104,13 @@ def _resolve_route(org_id: str, value: str) -> Optional[str]:
     return by_name.data[0]["id"] if by_name.data else None
 
 
-def _resolve_stop(route_id: str, value: Optional[str]) -> Optional[str]:
+def _resolve_stop(route_id: Optional[str], value: Optional[str]) -> Optional[str]:
     """Validate a drop-off stop NAME against the stops of `route_id`, returning the
     stop's canonical (DB-cased) name. Empty/None → None (no drop-off stop set).
+    No route → None (a stop only makes sense on a route).
     Raises 400 if the name isn't one of the route's stops. Matched case-insensitively
     so "main gate" resolves to "Main Gate"."""
-    if not value or not value.strip():
+    if not value or not value.strip() or not route_id:
         return None
     name = value.strip()
     match = (
@@ -252,8 +261,11 @@ def create_passenger(
     current_user: dict = Depends(require_permission("manage_passengers")),
 ):
     org_id = current_user["org_id"]
-    route_id = _resolve_route(org_id, body.route_id)
-    if not route_id:
+    # Route is OPTIONAL. Given but unknown → 404 (a typo must not silently
+    # create an unrouted student); blank/omitted → created with no route.
+    route_given = bool(body.route_id and body.route_id.strip())
+    route_id = _resolve_route(org_id, body.route_id) if route_given else None
+    if route_given and not route_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such route in your organization.")
     extra = {f: getattr(body, f) for f in _STUDENT_FIELDS}
     # Drop-off stop must be one of the route's stops; store the canonical name.
@@ -411,16 +423,21 @@ def update_passenger(
             pax_update[f] = getattr(body, f)
 
     route_changed = False
-    if body.route_id is not None:
-        rid = _resolve_route(org_id, body.route_id)
-        if not rid:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such route in your organization.")
-        pax_update["route_id"] = rid
-        route_changed = rid != existing.data[0].get("route_id")
+    if "route_id" in body.model_fields_set:
+        if body.route_id is None or not body.route_id.strip():
+            # Explicit clear: the student now has NO route (and so no drop-off stop).
+            pax_update["route_id"] = None
+            route_changed = existing.data[0].get("route_id") is not None
+        else:
+            rid = _resolve_route(org_id, body.route_id)
+            if not rid:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such route in your organization.")
+            pax_update["route_id"] = rid
+            route_changed = rid != existing.data[0].get("route_id")
 
     # Drop-off stop is validated against the EFFECTIVE route (the new one if the
     # route is changing, else the existing one).
-    effective_route = pax_update.get("route_id") or existing.data[0].get("route_id")
+    effective_route = pax_update["route_id"] if "route_id" in pax_update else existing.data[0].get("route_id")
     if "drop_off_stop" in body.model_fields_set:
         pax_update["drop_off_stop"] = _resolve_stop(effective_route, body.drop_off_stop) if effective_route else None
     elif route_changed and existing.data[0].get("drop_off_stop"):
@@ -463,8 +480,9 @@ def bulk_create(
     errors = []
     for i, row in enumerate(body.rows):
         try:
-            route_id = _resolve_route(org_id, row.route.strip())
-            if not route_id:
+            route_val = (row.route or "").strip()
+            route_id = _resolve_route(org_id, route_val) if route_val else None  # blank = no route yet
+            if route_val and not route_id:
                 raise HTTPException(status_code=400, detail=f"Unknown route '{row.route}'.")
             _create_passenger(org_id, row.name.strip(), row.email.strip(), row.university_id, route_id)
             created += 1
@@ -520,10 +538,9 @@ def bulk_create_students(
                 raise ValueError("Parent email is required.")
             if not parent_phone:
                 raise ValueError("Parent phone is required.")
-            if not route_val:
-                raise ValueError("Route is required.")
-            route_id = _resolve_route(org_id, route_val)
-            if not route_id:
+            # Route is optional (blank = "Not defined" until a manager assigns one).
+            route_id = _resolve_route(org_id, route_val) if route_val else None
+            if route_val and not route_id:
                 raise ValueError(f"Unknown route '{route_val}'.")
             # Optional drop-off stop, validated (by name) against the route's stops.
             drop_off_stop = _resolve_stop(route_id, (row.drop_off_stop or "").strip() or None)
