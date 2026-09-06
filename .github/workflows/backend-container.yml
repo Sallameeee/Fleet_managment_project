@@ -3,6 +3,8 @@ name: Build, test, and publish backend image
 on:
   push:
     branches: [main]
+    paths:
+      - "fleet-management/**"
   pull_request:
   workflow_dispatch:
 
