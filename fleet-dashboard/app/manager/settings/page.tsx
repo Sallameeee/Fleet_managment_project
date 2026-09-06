@@ -138,6 +138,7 @@ function TrackingTab() {
   const [start, setStart] = useState("");
   const [end, setEnd] = useState("");
   const [alwaysOn, setAlwaysOn] = useState(true);
+  const [longStop, setLongStop] = useState("5");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -150,6 +151,7 @@ function TrackingTab() {
         setStart(toInput(h.tracking_start_time));
         setEnd(toInput(h.tracking_end_time));
         setAlwaysOn(h.mode === "always_on");
+        setLongStop(String(h.long_stop_minutes ?? 5));
       })
       .catch((e) => setError(e instanceof Error ? e.message : t("common.loadFailed")))
       .finally(() => setLoading(false));
@@ -162,8 +164,11 @@ function TrackingTab() {
     setError(null);
     setSaved(false);
     try {
-      const h = alwaysOn ? await setTrackingHours(null, null) : await setTrackingHours(start, end);
+      // Only send the long-stop threshold when it can actually be stored.
+      const ls = current?.long_stop_configurable === false ? undefined : Math.max(0, Number(longStop) || 0);
+      const h = alwaysOn ? await setTrackingHours(null, null, ls) : await setTrackingHours(start, end, ls);
       setCurrent(h);
+      setLongStop(String(h.long_stop_minutes ?? ls ?? 5));
       setSaved(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : t("common.failed"));
@@ -206,6 +211,27 @@ function TrackingTab() {
       )}
 
       <p className="text-xs text-slate-500">{alwaysOn ? t("settings.alwaysOnHelp") : t("settings.windowHelp")}</p>
+
+      {/* Long-stop detection threshold (shared: school + university). */}
+      <div className="space-y-2 border-t border-ink-800 pt-4">
+        <h3 className="text-sm font-semibold text-white">{t("settings.longStopTitle")}</h3>
+        <label className="flex flex-wrap items-center gap-2 text-sm text-slate-300">
+          <span>{t("settings.longStopLabel")}</span>
+          <input
+            type="number"
+            min={0}
+            max={180}
+            value={longStop}
+            disabled={current?.long_stop_configurable === false}
+            onChange={(e) => setLongStop(e.target.value)}
+            className="w-20 rounded-lg border border-ink-700 bg-ink-850 px-2 py-1.5 text-slate-100 focus:border-brand focus:outline-none disabled:opacity-50"
+          />
+          <span>{t("settings.minutes")}</span>
+        </label>
+        <p className="text-xs text-slate-500">
+          {current?.long_stop_configurable === false ? t("settings.longStopLocked") : t("settings.longStopHelp")}
+        </p>
+      </div>
       {error && <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-300">{error}</div>}
       {saved && <div className="rounded-lg border border-brand/30 bg-brand/10 px-3 py-2 text-sm text-brand-sage">{t("settings.saved")}</div>}
       <Button type="submit" loading={saving} className="w-auto px-6">{t("common.save")}</Button>

@@ -195,6 +195,11 @@ export const dict: Record<string, { en: string; ar: string }> = {
 
   // --- settings extras ------------------------------------------------------
   "settings.alwaysOnHelp": { en: "The public link shows live position whenever a trip is running.", ar: "يعرض الرابط العام الموقع المباشر عند وجود رحلة جارية." },
+  "settings.longStopTitle": { en: "Long stop detection", ar: "رصد التوقف الطويل" },
+  "settings.longStopLabel": { en: "Flag a bus that stands still (away from any stop) for more than", ar: "تنبيه عند توقف الحافلة (بعيدًا عن أي محطة) لأكثر من" },
+  "settings.minutes": { en: "minutes", ar: "دقيقة" },
+  "settings.longStopHelp": { en: "Applies to every trip. Stops at scheduled route stops are never flagged. Set 0 to turn it off.", ar: "يُطبَّق على كل الرحلات. لا يُرصد التوقف في محطات المسار المجدولة. اضبطه على 0 لإيقافه." },
+  "settings.longStopLocked": { en: "Threshold is fixed at the default until the database migration (040) is applied.", ar: "الحد ثابت على القيمة الافتراضية حتى تطبيق ترحيل قاعدة البيانات (040)." },
   "settings.windowHelp": { en: "Outside this window the public link shows “tracking resumes at <start>” instead of a position.", ar: "خارج هذه الفترة يعرض الرابط العام «يُستأنف التتبّع في <البداية>» بدلًا من الموقع." },
 
   // --- nav ------------------------------------------------------------------

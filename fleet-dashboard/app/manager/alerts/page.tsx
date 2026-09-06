@@ -23,6 +23,9 @@ import Input from "@/components/Input";
 import Modal from "@/components/Modal";
 
 const ALERT_TYPES = ["speeding", "off_route", "short_stop", "offline"];
+// Event types that can appear in the alerts LIST. long_stop is produced by the
+// org-wide threshold in Settings → Tracking, not by an alert rule.
+const EVENT_TYPES = [...ALERT_TYPES, "long_stop"];
 const THRESHOLD_LABEL: Record<string, string> = {
   speeding: "km/h",
   off_route: "meters",
@@ -125,7 +128,7 @@ function Feed() {
       <div className="mb-3 flex flex-wrap items-center gap-2">
         <select value={fType} onChange={(e) => setFType(e.target.value)} className="rounded-lg border border-ink-700 bg-ink-850 px-2.5 py-1.5 text-sm text-slate-100">
           <option value="">{t("alerts.allTypes")}</option>
-          {ALERT_TYPES.map((ty) => <option key={ty} value={ty}>{ty}</option>)}
+          {EVENT_TYPES.map((ty) => <option key={ty} value={ty}>{ty}</option>)}
         </select>
         <select value={fRead} onChange={(e) => setFRead(e.target.value)} className="rounded-lg border border-ink-700 bg-ink-850 px-2.5 py-1.5 text-sm text-slate-100">
           <option value="">{t("alerts.readAndUnread")}</option>

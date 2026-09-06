@@ -36,6 +36,16 @@ START_EARLY_WINDOW_MIN = 15
 # a one-line tune. A ping within this distance of a stop counts as "at" it.
 GEOFENCE_RADIUS_M = 75
 
+# Long-stop detection (SHARED, school + university): a bus that stays within
+# LONG_STOP_JITTER_M of one point (and reports ~0 speed) for longer than the
+# org's threshold, while NOT within GEOFENCE_RADIUS_M of any scheduled route
+# stop, raises one `long_stop` alert. The threshold lives in
+# organizations.long_stop_minutes (migration 040); this default applies when the
+# column is missing or NULL. 0 disables detection for the org.
+LONG_STOP_DEFAULT_MIN = 5
+LONG_STOP_JITTER_M = 30      # GPS wobble tolerated while "standing still"
+LONG_STOP_MOVING_MPS = 1.5   # a fix faster than this (~5 km/h) ends the stand-still
+
 # "Today" for a driver's assignments is LOCAL (Africa/Cairo, DST-aware) — see the
 # single shared definition in capacity_logic.
 from capacity_logic import LOCAL_TZ
@@ -1292,10 +1302,13 @@ def _process_pings(trip: dict, norm_pings: list) -> dict:
             _rule_applies(r, trip) for r in shortstop_rules
         )
 
+        summary["long_stop_alerts"] = 0
         if not stops:
             # No stops -> no geofence/short_stop/off_route, but speeding can still
-            # fire (it needs no route geometry).
+            # fire (it needs no route geometry). Long stops too: with no scheduled
+            # stops, every prolonged stand-still is "away from a stop".
             _detect_incidents(trip, ordered, rules, stops, summary)
+            _detect_long_stop(trip, ordered, stops, summary)
             return summary
 
         # Currently-open events for this trip (arrived, not yet departed).
@@ -1384,10 +1397,145 @@ def _process_pings(trip: dict, norm_pings: list) -> dict:
 
         # Rule-based incident detection (bounded-window, rising-edge, dedup'd).
         _detect_incidents(trip, ordered, rules, stops, summary)
+        # Long stand-still away from any scheduled stop (org-configurable minutes).
+        _detect_long_stop(trip, ordered, stops, summary)
     except Exception as exc:
         # Never let detection trouble fail ping capture.
         summary["error"] = f"detection skipped: {exc}"
     return summary
+
+
+def _long_stop_threshold_min(org_id: str) -> int:
+    """Org's long-stop threshold in minutes. Resilient: the column may not exist
+    yet (migration 040 not run) or be NULL -> LONG_STOP_DEFAULT_MIN. 0 = off."""
+    try:
+        rows = (
+            supabase.table("organizations")
+            .select("long_stop_minutes")
+            .eq("id", org_id)
+            .limit(1)
+            .execute()
+            .data
+        )
+        v = rows[0].get("long_stop_minutes") if rows else None
+        return LONG_STOP_DEFAULT_MIN if v is None else max(0, int(v))
+    except Exception:
+        return LONG_STOP_DEFAULT_MIN
+
+
+def _detect_long_stop(trip: dict, ordered_batch: list, stops: list, summary: dict) -> None:
+    """Flag a bus standing still for longer than the org threshold while NOT at
+    a scheduled stop. SHARED for both modules; best-effort (errors swallowed by
+    the caller). Writes to the same `alerts` table the Logs page / Alerts page /
+    manager notification bell already read, type='long_stop'.
+
+    How "standing still" is measured (documented proxy — GPS has no odometer):
+      * an ANCHOR fix starts a stand-still; every later fix that is within
+        LONG_STOP_JITTER_M of the anchor AND not moving (speed missing or
+        < LONG_STOP_MOVING_MPS) extends it; anything else starts a new anchor.
+      * once (fix time - anchor time) >= threshold, and the anchor is farther
+        than GEOFENCE_RADIUS_M from every route stop (or the route has no stops),
+        ONE alert is written with occurred_at = the anchor time.
+    The window is rebuilt from STORED pings (batch pings are already saved), so
+    buffered / out-of-order delivery is handled the same way as speeding. The
+    anchor time is stable while the bus keeps standing, so re-flushing or later
+    batches de-duplicate against the existing alert instead of repeating it.
+    LIMITATION: a stand-still that is at a stop ON ANOTHER route, or a genuine
+    traffic jam / red light longer than the threshold, is still flagged — the
+    manager sees the location and can dismiss it. Not raised for the very first
+    fixes of a trip (no anchor yet) and never for pings without coordinates.
+    """
+    if not ordered_batch:
+        return
+    threshold_min = _long_stop_threshold_min(trip["org_id"])
+    if threshold_min <= 0:
+        return  # disabled for this org
+    threshold = timedelta(minutes=threshold_min)
+    trip_id = trip["id"]
+    min_ts = ordered_batch[0]["recorded_dt"]
+    max_ts = ordered_batch[-1]["recorded_dt"]
+    # Look back far enough to contain any stand-still that ends in this batch
+    # (2x threshold, at least 15 min) — bounded, so it stays cheap.
+    lookback = max(threshold * 2, timedelta(minutes=15))
+    rows = (
+        supabase.table("location_pings")
+        .select("lat, lng, speed, recorded_at")
+        .eq("trip_id", trip_id)
+        .gte("recorded_at", (min_ts - lookback).isoformat())
+        .lte("recorded_at", max_ts.isoformat())
+        .order("recorded_at", desc=False)
+        .limit(5000)
+        .execute()
+        .data
+    )
+    window = [_parse_ping_row(r) for r in rows if r.get("lat") is not None and r.get("lng") is not None]
+    if len(window) < 2:
+        return
+    # Already-raised long stops in range -> their anchor times (replay-dedupe).
+    # (No `.eq("type", "long_stop")` here: filtering on an enum value that does
+    # not exist yet raises 22P02 before migration 039. The detail prefix
+    # identifies long stops in both the pre- and post-migration encodings.)
+    existing = (
+        supabase.table("alerts")
+        .select("type, detail, occurred_at")
+        .eq("trip_id", trip_id)
+        .gte("occurred_at", (min_ts - lookback).isoformat())
+        .lte("occurred_at", max_ts.isoformat())
+        .execute()
+        .data
+    )
+    flagged = {
+        _parse_dt(a["occurred_at"]) for a in existing
+        if a.get("type") == "long_stop" or str(a.get("detail") or "").startswith("Long stop:")
+    }
+
+    anchor = window[0]
+    for p in window[1:]:
+        moving = p.get("speed") is not None and float(p["speed"]) >= LONG_STOP_MOVING_MPS
+        drifted = _haversine_m(anchor["lat"], anchor["lng"], p["lat"], p["lng"]) > LONG_STOP_JITTER_M
+        if moving or drifted:
+            anchor = p
+            continue
+        standing = p["recorded_dt"] - anchor["recorded_dt"]
+        if standing < threshold or anchor["recorded_dt"] in flagged:
+            continue
+        at_stop = bool(stops) and _nearest_stop_m(anchor["lat"], anchor["lng"], stops) <= GEOFENCE_RADIUS_M
+        if at_stop:
+            # A legitimately long dwell at a scheduled stop is not an incident.
+            flagged.add(anchor["recorded_dt"])  # don't re-check this anchor
+            continue
+        near_m = _nearest_stop_m(anchor["lat"], anchor["lng"], stops) if stops else None
+        where = f"{near_m:.0f} m from the nearest stop" if near_m is not None else "on a route with no stops"
+        detail = (
+            f"Long stop: stationary for {standing.total_seconds() / 60:.0f} min "
+            f"({where}; limit {threshold_min} min)"
+        )
+        _insert_long_stop_alert(trip, anchor, detail)
+        flagged.add(anchor["recorded_dt"])
+        summary["long_stop_alerts"] = summary.get("long_stop_alerts", 0) + 1
+
+
+def _insert_long_stop_alert(trip: dict, anchor: dict, detail: str) -> None:
+    """Insert the long_stop alert. Resilient pre-migration 039: if the alerts
+    `type` enum does not have 'long_stop' yet, store it as 'short_stop' with the
+    'Long stop:' detail prefix (logs.py labels it correctly from the prefix), so
+    the event is never lost; it just gets the proper type once 039 is applied."""
+    row = {
+        "org_id": trip["org_id"],
+        "trip_id": trip["id"],
+        "driver_id": trip["driver_id"],
+        "type": "long_stop",
+        "lat": anchor["lat"],
+        "lng": anchor["lng"],
+        "detail": detail,
+        "occurred_at": anchor["recorded_dt"].isoformat(),
+    }
+    try:
+        supabase.table("alerts").insert(row).execute()
+    except Exception as exc:
+        if "enum" not in str(exc).lower():
+            raise
+        supabase.table("alerts").insert({**row, "type": "short_stop"}).execute()
 
 
 def _parse_ping_row(r: dict) -> dict:

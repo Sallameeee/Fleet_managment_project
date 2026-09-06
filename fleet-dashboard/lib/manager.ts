@@ -1550,6 +1550,10 @@ export interface TrackingHours {
   tracking_start_time: string | null;
   tracking_end_time: string | null;
   mode: "always_on" | "windowed";
+  /** Long-stop detection threshold in minutes (0 = off). */
+  long_stop_minutes?: number;
+  /** false until migration 040 adds the column — the field is then read-only. */
+  long_stop_configurable?: boolean;
 }
 
 export async function getTrackingHours(): Promise<TrackingHours> {
@@ -1561,10 +1565,15 @@ export async function getTrackingHours(): Promise<TrackingHours> {
 export async function setTrackingHours(
   start: string | null,
   end: string | null,
+  longStopMinutes?: number,
 ): Promise<TrackingHours> {
   const res = await managerFetch("/organizations/tracking-hours", {
     method: "PATCH",
-    body: JSON.stringify({ tracking_start_time: start, tracking_end_time: end }),
+    body: JSON.stringify({
+      tracking_start_time: start,
+      tracking_end_time: end,
+      ...(longStopMinutes === undefined ? {} : { long_stop_minutes: longStopMinutes }),
+    }),
   });
   if (!res.ok) throw new Error(await extractError(res, "Failed to save settings."));
   return (await res.json()) as TrackingHours;
