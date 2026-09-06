@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 
 from auth import require_permission
 from database import supabase
+from routers.trips import cancel_active_trips
 
 router = APIRouter(prefix="/assignments", tags=["assignments"])
 
@@ -328,8 +329,13 @@ def delete_assignment(
 ):
     org_id = current_user["org_id"]
     _verify_belongs_to_org("assignments", assignment_id, org_id, "assignment")
+    # Deleting an assignment that is being driven RIGHT NOW is how a manager
+    # cancels a trip. Mark the live trip `cancelled` FIRST (shared logic in
+    # trips.cancel_active_trips) so the driver app stops tracking and resets,
+    # and so history keeps the record instead of an orphaned "active" trip.
+    cancelled = cancel_active_trips(org_id, assignment_id=assignment_id)
     supabase.table("assignments").delete().eq("id", assignment_id).eq("org_id", org_id).execute()
-    return {"deleted": assignment_id}
+    return {"deleted": assignment_id, "cancelled_trips": [t["id"] for t in cancelled]}
 
 
 @router.get("")

@@ -2,7 +2,9 @@ name: Build, test, and publish backend image
 
 on:
   push:
-    branches: [CI]
+    branches: [main]
+    paths:
+      - "fleet-management/**"
   pull_request:
   workflow_dispatch:
 
@@ -89,14 +91,14 @@ jobs:
         run: docker rm --force fleet-management-test || true
 
       - name: Log in to Docker Hub
-        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/CI'
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Tag and push verified image
-        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/CI'
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         run: |
           docker tag "$LOCAL_IMAGE" "$DOCKERHUB_IMAGE:latest"
           docker tag "$LOCAL_IMAGE" "$DOCKERHUB_IMAGE:sha-$GITHUB_SHA"

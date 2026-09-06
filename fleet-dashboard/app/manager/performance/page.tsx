@@ -86,8 +86,8 @@ export default function ManagerPerformancePage() {
 
           {/* Per-trip table */}
           <h2 className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-400">{t("perf.tripsTitle")}</h2>
-          <div className="overflow-x-auto rounded-xl border border-ink-800">
-            <table className="w-full min-w-[720px] text-left text-sm">
+          <div className="table-scroll rounded-xl border border-ink-800">
+            <table className="w-full min-w-[760px] text-left text-sm">
               <thead className="bg-ink-900/70 text-xs uppercase tracking-wide text-slate-400">
                 <tr>
                   <th className="px-4 py-3">{t("perf.date")}</th>

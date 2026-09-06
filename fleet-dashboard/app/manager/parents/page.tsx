@@ -134,7 +134,7 @@ function ChildRow({ c }: { c: ParentChild }) {
       </div>
       <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-slate-400">
         <span className="inline-flex items-center gap-1">
-          🚌 {c.route_name ?? <span className="text-slate-600">{t("parents.noRoute")}</span>}
+          🚌 {c.route_name ?? <span className="text-slate-600">{t("common.notDefined")}</span>}
         </span>
         <span className="text-slate-600">·</span>
         <span className="inline-flex items-center gap-1">

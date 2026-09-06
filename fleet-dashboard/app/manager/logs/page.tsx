@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { getTodayLogs, getAllLogs, type LogEvent } from "@/lib/manager";
 import { useT } from "@/lib/i18n";
 import { useIsSchool } from "@/lib/module";
@@ -57,7 +58,10 @@ export default function ManagerLogsPage() {
             {loading ? t("common.loading") : mode === "today" ? t("logs.subtitleToday") : t("logs.subtitleAll")}
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <Link href="/manager/logs/settings" className="rounded-lg border border-brand/40 px-3 py-2 text-sm text-brand-sage transition-colors hover:bg-brand/10">
+            {t("nav.editLogs")}
+          </Link>
           {mode === "today" && !loading && (
             <span className="inline-flex items-center gap-1.5 text-xs text-emerald-400">
               <span className="relative flex h-2 w-2">

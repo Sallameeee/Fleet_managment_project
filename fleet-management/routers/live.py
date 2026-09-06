@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends
 
 from auth import require_permission
+import gps_filter
 from database import supabase
 from live_logic import ONLINE_WINDOW, driver_live_positions
 
@@ -69,14 +70,9 @@ def live_drivers(current_user: dict = Depends(require_permission("view_tracking"
             continue
         seen.add(did)
 
-        lp = (
-            supabase.table("location_pings")
-            .select("lat, lng, recorded_at")
-            .eq("trip_id", t["id"])
-            .order("recorded_at", desc=True)
-            .limit(1)
-            .execute()
-        ).data
+        # Newest ACCEPTED fix (shared GPS plausibility rule) — never a spike.
+        _pos = gps_filter.latest_position(supabase, t["id"])
+        lp = [_pos] if _pos else []
 
         position = None
         online = False

@@ -137,35 +137,40 @@ def directory(current_user: dict = Depends(require_permission("manage_drivers"))
 
 
 @router.get("/buses-today", dependencies=[Depends(require_feature("buses_today"))])
-def buses_today(current_user: dict = Depends(require_permission("view_tracking"))):
-    """Every bus operating TODAY with its EFFECTIVE roster — who is actually on
-    each bus today after approved one-day bus changes.
+def buses_today(
+    current_user: dict = Depends(require_permission("view_tracking")),
+    on_date: Optional[date] = Query(None, alias="date", description="Day to view (YYYY-MM-DD). Default today; future dates allowed."),
+):
+    """Every bus operating on a given DAY with its EFFECTIVE roster — who is
+    actually on each bus that day after approved one-day bus changes.
+
+    `date` defaults to today; FUTURE dates are allowed so a manager can preview
+    "what will this bus look like" — the roster reflects change requests scheduled
+    for that date (effective_roster is date-driven).
 
     Reuses `effective_roster` from capacity_logic (the SAME function the supervisor
     app roster and the parent map use) so this manager view can never disagree
-    with them. Per bus it lists:
-      * riding    — students actually on this bus today, each flagged moved_in
-                    (joined via a change) with their effective drop-off stop,
-      * moved_out — students normally on this route who ride another bus today
-                    (with the destination route name),
-      * live/trip status (not started / active / completed) and the supervisor.
-    School only.
+    with them. Per bus it lists riding / moved_out students, the supervisor + bus,
+    and the trip status (not started / active / completed). School only.
     """
     org_id = current_user["org_id"]
     require_school_org(org_id)
 
-    today = datetime.now(LOCAL_TZ).date().isoformat()
+    today = datetime.now(LOCAL_TZ).date()
+    target_date = on_date or today
+    target = target_date.isoformat()
+    is_today = target_date == today
     now_t = datetime.now(LOCAL_TZ).time()
 
     routes = supabase.table("routes").select("id, name").eq("org_id", org_id).execute().data
     route_name = {r["id"]: r["name"] for r in routes}
 
-    # Today's assignments → supervisor + bus per route (current one if several).
+    # Assignments FOR THE TARGET DATE → supervisor + bus per route.
     assigns = (
         supabase.table("assignments")
         .select("driver_id, vehicle_id, route_id, start_time, end_time")
         .eq("org_id", org_id)
-        .eq("trip_date", today)
+        .eq("trip_date", target)
         .execute()
         .data
     )
@@ -178,12 +183,16 @@ def buses_today(current_user: dict = Depends(require_permission("view_tracking")
     bus_no = {v["id"]: v["bus_number"] for v in (supabase.table("vehicles").select("id, bus_number").in_("id", veh_ids).execute().data if veh_ids else [])}
     sup_name = {p["id"]: p["name"] for p in (supabase.table("profiles").select("id, name").in_("id", drv_ids).execute().data if drv_ids else [])}
 
-    # Today's trips per route → live/completed status.
+    # Trips on the TARGET DAY → live/completed status. A future day has none, so
+    # every bus reads "not started" (scheduled) — which is exactly right.
+    day_start = datetime.combine(target_date, time.min, tzinfo=LOCAL_TZ).astimezone(timezone.utc)
+    day_end = datetime.combine(target_date + timedelta(days=1), time.min, tzinfo=LOCAL_TZ).astimezone(timezone.utc)
     trips = (
         supabase.table("trips")
         .select("route_id, status, started_at")
         .eq("org_id", org_id)
-        .gte("started_at", datetime.combine(datetime.now(LOCAL_TZ).date(), time.min, tzinfo=LOCAL_TZ).astimezone(timezone.utc).isoformat())
+        .gte("started_at", day_start.isoformat())
+        .lt("started_at", day_end.isoformat())
         .execute()
         .data
     )
@@ -192,14 +201,17 @@ def buses_today(current_user: dict = Depends(require_permission("view_tracking")
         rid = t.get("route_id")
         if not rid:
             continue
-        # active beats completed if both exist for a route today.
+        # active beats completed if both exist for a route that day.
         if trip_status.get(rid) != "active":
             trip_status[rid] = t.get("status") or trip_status.get(rid)
 
     buses = []
     for rid, rname in route_name.items():
-        riding, moved_out = effective_roster(org_id, rid, today)
-        cur = pick_current_assignment(by_route.get(rid, []), now_t) if by_route.get(rid) else None
+        riding, moved_out = effective_roster(org_id, rid, target)
+        # On the current day pick the shift active now; on any other day just take
+        # the first assignment for the route (no "current time" concept applies).
+        rlist = by_route.get(rid, [])
+        cur = (pick_current_assignment(rlist, now_t) if is_today else (rlist[0] if rlist else None)) if rlist else None
         # Show a bus if it operates today (assignment) OR its roster is affected.
         if not cur and not riding and not moved_out:
             continue
@@ -243,7 +255,7 @@ def buses_today(current_user: dict = Depends(require_permission("view_tracking")
             }
         )
     buses.sort(key=lambda x: (x["route_name"] or "").lower())
-    return {"date": today, "count": len(buses), "buses": buses}
+    return {"date": target, "is_today": is_today, "count": len(buses), "buses": buses}
 
 
 @router.get("/performance", dependencies=[Depends(require_feature("performance"))])

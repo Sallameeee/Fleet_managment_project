@@ -954,7 +954,7 @@ export interface CreatePassengerInput {
   name: string;
   email: string;
   university_id?: string;
-  route_id: string;
+  route_id?: string; // optional: omit/empty = no route yet ("Not defined")
   // School module (students):
   parent_phone?: string;
   parent_email?: string;
@@ -1011,7 +1011,7 @@ export async function createPassenger(input: CreatePassengerInput): Promise<Pass
 export interface UpdatePassengerInput {
   name?: string;
   university_id?: string | null;
-  route_id?: string;
+  route_id?: string | null; // null = clear the route
   is_active?: boolean;
   parent_phone?: string | null;
   parent_email?: string | null;
@@ -1216,10 +1216,12 @@ export interface BusToday {
   moved_out: BusesTodayMovedOut[];
 }
 
-export async function getBusesToday(): Promise<{ date: string; count: number; buses: BusToday[] }> {
-  const res = await managerFetch("/school/buses-today");
+export async function getBusesToday(date?: string): Promise<{ date: string; is_today: boolean; count: number; buses: BusToday[] }> {
+  // `date` = YYYY-MM-DD (any day, incl. future). Omit for today.
+  const q = date ? `?date=${encodeURIComponent(date)}` : "";
+  const res = await managerFetch(`/school/buses-today${q}`);
   if (!res.ok) throw new Error(await extractError(res, "Failed to load buses."));
-  return (await res.json()) as { date: string; count: number; buses: BusToday[] };
+  return (await res.json()) as { date: string; is_today: boolean; count: number; buses: BusToday[] };
 }
 
 // --- Notifications (School module) -------------------------------------------
@@ -1442,6 +1444,7 @@ export interface HistoryStopVisit {
   departure_time: string | null;
   planned_dwell_seconds: number | null;
   actual_dwell_seconds: number | null;
+  status?: "visited" | "skipped"; // 'skipped' = passed without stopping (missed)
 }
 
 export interface HistoryTrip {
@@ -1547,6 +1550,10 @@ export interface TrackingHours {
   tracking_start_time: string | null;
   tracking_end_time: string | null;
   mode: "always_on" | "windowed";
+  /** Long-stop detection threshold in minutes (0 = off). */
+  long_stop_minutes?: number;
+  /** false until migration 040 adds the column — the field is then read-only. */
+  long_stop_configurable?: boolean;
 }
 
 export async function getTrackingHours(): Promise<TrackingHours> {
@@ -1558,11 +1565,55 @@ export async function getTrackingHours(): Promise<TrackingHours> {
 export async function setTrackingHours(
   start: string | null,
   end: string | null,
+  longStopMinutes?: number,
 ): Promise<TrackingHours> {
   const res = await managerFetch("/organizations/tracking-hours", {
     method: "PATCH",
-    body: JSON.stringify({ tracking_start_time: start, tracking_end_time: end }),
+    body: JSON.stringify({
+      tracking_start_time: start,
+      tracking_end_time: end,
+      ...(longStopMinutes === undefined ? {} : { long_stop_minutes: longStopMinutes }),
+    }),
   });
   if (!res.ok) throw new Error(await extractError(res, "Failed to save settings."));
   return (await res.json()) as TrackingHours;
+}
+
+// --- Edit Logs (per-org event logging settings; shared by both modules) -------
+
+export interface LogSettingEvent {
+  type: string;
+  label: string;
+  unit: string | null;
+  threshold_kind: "limit" | "distance" | "duration" | null;
+  help: string;
+  min: number | null;
+  max: number | null;
+  enabled: boolean;
+  threshold: number | null;
+  duration_s: number | null;
+  has_duration: boolean;
+  default_threshold: number | null;
+  explicit: boolean;
+}
+
+export interface LogSettings {
+  module: "school" | "university";
+  /** false until migration 043 adds organizations.log_settings */
+  configurable: boolean;
+  events: LogSettingEvent[];
+}
+
+export async function getLogSettings(): Promise<LogSettings> {
+  const res = await managerFetch("/log-settings");
+  if (!res.ok) throw new Error(await extractError(res, "Failed to load log settings."));
+  return (await res.json()) as LogSettings;
+}
+
+export async function patchLogSettings(
+  body: Record<string, { enabled?: boolean; threshold?: number; duration_s?: number }>,
+): Promise<LogSettings> {
+  const res = await managerFetch("/log-settings", { method: "PATCH", body: JSON.stringify(body) });
+  if (!res.ok) throw new Error(await extractError(res, "Failed to save log settings."));
+  return (await res.json()) as LogSettings;
 }

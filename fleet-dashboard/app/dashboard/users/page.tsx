@@ -26,7 +26,7 @@ function PermChecks({
   onChange: (next: Record<string, boolean>) => void;
 }) {
   return (
-    <div className="grid grid-cols-2 gap-2">
+    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
       {PLATFORM_PERMISSIONS.map((p) => (
         <label key={p} className="flex items-center gap-2 text-sm text-slate-300">
           <input
@@ -139,7 +139,7 @@ export default function PlatformUsersPage() {
 
   return (
     <div>
-      <div className="mb-6 flex items-center justify-between">
+      <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-semibold text-white">{t("nav.users")}</h1>
           <p className="text-sm text-slate-400">{t("users.subtitle")}</p>
@@ -158,8 +158,8 @@ export default function PlatformUsersPage() {
         </div>
       )}
 
-      <div className="overflow-hidden rounded-xl border border-ink-800">
-        <table className="w-full text-left text-sm">
+      <div className="overflow-x-auto rounded-xl border border-ink-800">
+        <table className="w-full min-w-[720px] text-left text-sm">
           <thead className="bg-ink-900/70 text-xs uppercase tracking-wide text-slate-400">
             <tr>
               <th className="px-4 py-3">{t("common.name")}</th>

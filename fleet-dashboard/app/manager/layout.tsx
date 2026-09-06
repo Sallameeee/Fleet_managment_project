@@ -39,6 +39,7 @@ const MANAGER_NAV: { href: string; key: string; perm?: string; group: string; sc
   { href: "/manager/passengers", key: "nav.passengers", perm: "manage_passengers", group: "nav.grpManagement", feature: "passengers" },
   { href: "/manager/parents", key: "nav.parents", perm: "manage_passengers", group: "nav.grpManagement", schoolOnly: true, feature: "parents_page" },
   { href: "/manager/alerts", key: "nav.alerts", perm: "manage_trips", group: "nav.grpOperations", feature: "alerts" },
+  { href: "/manager/logs/settings", key: "nav.editLogs", perm: "manage_settings", group: "nav.grpOperations", feature: "alerts" },
   { href: "/manager/change-requests", key: "nav.changeRequests", perm: "manage_passengers", group: "nav.grpOperations", schoolOnly: true, feature: "change_requests" },
   { href: "/manager/profile-requests", key: "nav.profileRequests", perm: "manage_passengers", group: "nav.grpOperations", schoolOnly: true, feature: "profile_requests" },
   { href: "/manager/parent-reports", key: "nav.parentReports", perm: "manage_passengers", group: "nav.grpOperations", feature: "reports" },

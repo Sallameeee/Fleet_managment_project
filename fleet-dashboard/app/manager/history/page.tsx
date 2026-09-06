@@ -400,28 +400,39 @@ export default function ManagerHistoryPage() {
               <ol className="space-y-2">
                 {selected.stop_visits.map((v, i) => {
                   const planned = v.planned_dwell_seconds;
+                  const skipped = v.status === "skipped";
                   return (
                     <li key={v.stop_id ?? i} className="flex items-start gap-3">
-                      <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-bold text-white" style={{ background: selected.route_color || ACTUAL }}>
+                      <span
+                        className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-bold text-white"
+                        style={{ background: skipped ? "#9ca3af" : selected.route_color || ACTUAL }}
+                      >
                         {v.stop_order ?? i + 1}
                       </span>
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center justify-between gap-2">
-                          <span className="truncate text-sm font-medium text-white">{v.stop_name ?? "—"}</span>
-                          <span className="shrink-0 text-xs text-slate-400">{t("hist.arrived")} {fmtClockIso(v.arrival_time)}</span>
-                        </div>
-                        <div className="mt-0.5 text-xs text-slate-400">
-                          {v.departure_time ? (
-                            <>
-                              {t("hist.waited")} <span className="font-semibold text-brand-sage">{fmtDwell(v.actual_dwell_seconds)}</span>
-                              {planned != null && planned > 0 && (
-                                <span className="text-slate-500"> · {fmtDwell(planned)} {t("hist.planned")}</span>
-                              )}
-                            </>
+                          <span className={"truncate text-sm font-medium " + (skipped ? "text-slate-400 line-through" : "text-white")}>{v.stop_name ?? "—"}</span>
+                          {skipped ? (
+                            <span className="shrink-0 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[11px] font-semibold text-amber-300">{t("hist.skipped")}</span>
                           ) : (
-                            <span className="text-amber-300/80">{t("hist.stillThere")}</span>
+                            <span className="shrink-0 text-xs text-slate-400">{t("hist.arrived")} {fmtClockIso(v.arrival_time)}</span>
                           )}
                         </div>
+                        {!skipped && (
+                          <div className="mt-0.5 text-xs text-slate-400">
+                            {v.departure_time ? (
+                              <>
+                                {t("hist.waited")} <span className="font-semibold text-brand-sage">{fmtDwell(v.actual_dwell_seconds)}</span>
+                                {planned != null && planned > 0 && (
+                                  <span className="text-slate-500"> · {fmtDwell(planned)} {t("hist.planned")}</span>
+                                )}
+                              </>
+                            ) : (
+                              <span className="text-amber-300/80">{t("hist.stillThere")}</span>
+                            )}
+                          </div>
+                        )}
+                        {skipped && <div className="mt-0.5 text-xs text-slate-500">{t("hist.skippedHint")}</div>}
                       </div>
                     </li>
                   );

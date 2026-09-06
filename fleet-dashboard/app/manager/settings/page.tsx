@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import {
   getTrackingHours,
   setTrackingHours,
@@ -162,6 +163,7 @@ function TrackingTab() {
     setError(null);
     setSaved(false);
     try {
+      // Only send the long-stop threshold when it can actually be stored.
       const h = alwaysOn ? await setTrackingHours(null, null) : await setTrackingHours(start, end);
       setCurrent(h);
       setSaved(true);
@@ -206,6 +208,11 @@ function TrackingTab() {
       )}
 
       <p className="text-xs text-slate-500">{alwaysOn ? t("settings.alwaysOnHelp") : t("settings.windowHelp")}</p>
+
+      <p className="border-t border-ink-800 pt-4 text-xs text-slate-500">
+        {t("settings.longStopMoved")}{" "}
+        <Link href="/manager/logs/settings" className="text-brand-sage hover:underline">{t("nav.editLogs")} →</Link>
+      </p>
       {error && <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-300">{error}</div>}
       {saved && <div className="rounded-lg border border-brand/30 bg-brand/10 px-3 py-2 text-sm text-brand-sage">{t("settings.saved")}</div>}
       <Button type="submit" loading={saving} className="w-auto px-6">{t("common.save")}</Button>
@@ -315,8 +322,8 @@ function UsersTab() {
 
       {error && <div className="mb-3 rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-300">{error}</div>}
 
-      <div className="overflow-hidden rounded-xl border border-ink-800">
-        <table className="w-full text-left text-sm">
+      <div className="table-scroll rounded-xl border border-ink-800">
+        <table className="w-full min-w-[640px] text-left text-sm">
           <thead className="bg-ink-900/70 text-xs uppercase tracking-wide text-slate-400">
             <tr>
               <th className="px-4 py-3">{t("common.name")}</th>

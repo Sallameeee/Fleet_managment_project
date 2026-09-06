@@ -80,11 +80,23 @@ export default function RouteEditor({
   route,
 }: {
   onClose: () => void;
-  onSaved: () => void;
+  /** Called with the created/updated route (so callers can pre-select it). */
+  onSaved: (saved: ManagerRoute) => void;
   route?: ManagerRoute;
 }) {
   const { t } = useT();
   const editing = !!route;
+
+  // Start / End labels are derived purely from ORDER (first = start point,
+  // last = end point), so they recompute on every add/remove/drag. Middle
+  // stops are free. Shared by the list rows, the map markers and the name
+  // fallback used at save time.
+  function roleLabel(i: number, n: number): string | null {
+    if (n === 0) return null;
+    if (i === 0) return t("routes.startPoint");
+    if (i === n - 1 && n > 1) return t("routes.endPoint");
+    return null;
+  }
 
   const [name, setName] = useState(route?.name ?? "");
   const [startTime, setStartTime] = useState((route?.start_time ?? "").slice(0, 5));
@@ -113,6 +125,14 @@ export default function RouteEditor({
   const [lineAdd, setLineAdd] = useState<LineAdd>(null);
   const [pendingAdd, setPendingAdd] = useState<PendingAdd>(null);
   const [overlayTick, setOverlayTick] = useState(0);
+
+  // "+ Add stop" opens a small panel with the place search AND "Pick on the
+  // map". It starts open on a brand-new route so the first action is obvious.
+  const [addOpen, setAddOpen] = useState(!route || route.stops.length === 0);
+  // Pick mode: the NEXT map click adds a stop right there (no "+" confirm).
+  const [pickMode, setPickMode] = useState(false);
+  const pickModeRef = useRef(false);
+  pickModeRef.current = pickMode;
 
   const [query, setQuery] = useState("");
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
@@ -148,6 +168,7 @@ export default function RouteEditor({
     setMenu(null);
     setLineAdd(null);
     setPendingAdd(null);
+    setPickMode(false);
   }, []);
 
   // Adding/removing/reordering stops shifts segment indices, which would
@@ -294,6 +315,13 @@ export default function RouteEditor({
     // (does NOT add a stop until the + is clicked). Line clicks handled below.
     map.on("click", (e) => {
       if (interactingRef.current) return;
+      if (pickModeRef.current) {
+        // "Pick on the map": one click = one new stop (appended, becomes the
+        // new end point). Leaves pick mode so a stray click can't add more.
+        setPickMode(false);
+        void addStop(e.lngLat.lng, e.lngLat.lat);
+        return;
+      }
       if (menuRef.current || lineAddRef.current || pendingAddRef.current) {
         closeOverlays();
         return;
@@ -356,6 +384,8 @@ export default function RouteEditor({
           : "0 0 0 0";
       const el = document.createElement("div");
       el.textContent = String(i + 1);
+      const role = roleLabel(i, stops.length);
+      el.title = role ? `${role} · ${s.name}` : s.name;
       el.style.cssText =
         `width:26px;height:26px;border-radius:9999px;background:${color};color:#fff;` +
         `display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;` +
@@ -506,6 +536,19 @@ export default function RouteEditor({
   }
 
   // ---- reorder -------------------------------------------------------------
+  // Touch screens have no HTML5 drag-and-drop, so every row also gets ▲/▼
+  // buttons. Same state change as a drop, so Start/End labels recompute.
+  function moveStop(from: number, delta: number) {
+    const to = from + delta;
+    if (to < 0 || to >= stopsRef.current.length) return;
+    clearShaping();
+    setStops((s) => {
+      const c = [...s];
+      const [moved] = c.splice(from, 1);
+      c.splice(to, 0, moved);
+      return c;
+    });
+  }
   const dragIndexRef = useRef<number | null>(null);
   function onListDrop(toIndex: number) {
     const from = dragIndexRef.current;
@@ -530,6 +573,14 @@ export default function RouteEditor({
       setError(t("routes.needTwoStops"));
       return;
     }
+    // A stop with no coordinates or a "…" placeholder name (geocode still
+    // pending / failed) is an empty stop — never save it.
+    const empty = stops.find((s) => !Number.isFinite(s.lat) || !Number.isFinite(s.lng) || s.name.trim() === "…");
+    if (empty) {
+      setSelectedId(empty.id);
+      setError(t("routes.emptyStopName"));
+      return;
+    }
     setSaving(true);
     setError(null);
     try {
@@ -541,7 +592,7 @@ export default function RouteEditor({
         est_minutes: dir?.minutes,
         geometry: dir?.geometry,
         stops: stops.map((s, i) => ({
-          name: s.name.trim() || `${t("routes.stop")} ${i + 1}`,
+          name: s.name.trim() || roleLabel(i, stops.length) || `${t("routes.stop")} ${i + 1}`,
           lat: s.lat,
           lng: s.lng,
           stop_order: i + 1,
@@ -549,9 +600,8 @@ export default function RouteEditor({
           arrival_time: s.arrival || null,
         })),
       };
-      if (editing && route) await updateRoute(route.id, payload);
-      else await createRoute(payload);
-      onSaved();
+      const saved = editing && route ? await updateRoute(route.id, payload) : await createRoute(payload);
+      onSaved(saved);
     } catch (e) {
       setError(e instanceof Error ? e.message : t("common.failed"));
     } finally {
@@ -594,11 +644,17 @@ export default function RouteEditor({
   }
 
   const circleBtn =
-    "flex h-9 w-9 items-center justify-center rounded-full border border-ink-700 bg-ink-900/95 text-white shadow-lg transition-colors hover:bg-ink-800";
+    "flex h-11 w-11 items-center justify-center rounded-full border border-ink-700 bg-ink-900/95 text-white shadow-lg transition-colors hover:bg-ink-800 md:h-9 md:w-9";
   const circleAdd =
-    "flex h-9 w-9 items-center justify-center rounded-full bg-brand text-lg font-bold leading-none text-white shadow-lg ring-2 ring-white transition hover:brightness-110";
+    "flex h-11 w-11 items-center justify-center rounded-full bg-brand text-xl font-bold leading-none text-white shadow-lg ring-2 ring-white transition hover:brightness-110 md:h-9 md:w-9 md:text-lg";
 
-  const topHint = moveId ? t("routes.moveHint") : pendingAdd ? t("routes.pendingAddHint") : t("routes.mapHint");
+  const topHint = pickMode
+    ? t("routes.pickHint")
+    : moveId
+      ? t("routes.moveHint")
+      : pendingAdd
+        ? t("routes.pendingAddHint")
+        : t("routes.mapHint");
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col bg-ink-950">
@@ -607,9 +663,10 @@ export default function RouteEditor({
         <button onClick={onClose} className="text-slate-400 hover:text-white" aria-label="Close">✕</button>
       </header>
 
-      <div className="flex min-h-0 flex-1">
-        {/* Map (kept LTR so it never mirrors under Arabic/RTL) */}
-        <div dir="ltr" className="relative min-w-0 flex-1">
+      <div className="flex min-h-0 flex-1 flex-col md:flex-row">
+        {/* Map (kept LTR so it never mirrors under Arabic/RTL). On phones it takes
+            the top ~42% of the screen and the stop panel scrolls underneath. */}
+        <div dir="ltr" className="relative h-[42dvh] min-w-0 shrink-0 md:h-auto md:flex-1">
           <MapView className="h-full w-full" styleSwitcher onReady={handleMapReady} onStyleChange={handleStyleChange} />
 
           {/* left-14 clears the style-switcher button that sits at top-left */}
@@ -662,7 +719,7 @@ export default function RouteEditor({
         </div>
 
         {/* Side panel */}
-        <aside className="flex w-96 shrink-0 flex-col border-s border-ink-800 bg-ink-900/50">
+        <aside className="flex min-h-0 w-full flex-1 flex-col border-t border-ink-800 bg-ink-900/50 md:w-96 md:flex-none md:border-s md:border-t-0">
           <div className="flex-1 space-y-4 overflow-y-auto p-4 pb-4">
             {/* Section 1 — basics */}
             <section className="space-y-2">
@@ -722,32 +779,53 @@ export default function RouteEditor({
 
             {/* Section 3 — stops */}
             <section className="space-y-2">
-              <div className="flex items-center justify-between">
+              <div className="flex items-center justify-between gap-2">
                 <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500">{t("routes.stops")} ({stops.length})</h3>
-                {stops.length > 1 && <span className="text-[10px] text-slate-600">{t("routes.dragToReorder")}</span>}
+                <button
+                  type="button"
+                  onClick={() => { setAddOpen((o) => !o); setPickMode(false); }}
+                  aria-expanded={addOpen}
+                  className={"rounded-lg border px-2.5 py-1 text-xs font-medium transition-colors " + (addOpen ? "border-brand bg-brand/15 text-white" : "border-ink-700 text-slate-300 hover:border-brand hover:text-white")}
+                >
+                  + {t("routes.addStop")}
+                </button>
               </div>
+              <p className="text-[10px] text-slate-600">{t("routes.orderHint")}</p>
 
-              <div className="relative">
-                <input
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                  placeholder={hasGoogleKey() ? t("routes.searchGoogle") : t("routes.googleMissing")}
-                  disabled={!hasGoogleKey()}
-                  className="w-full rounded-lg border border-ink-700 bg-ink-850 px-3 py-2 text-sm text-slate-100 focus:border-brand focus:outline-none disabled:opacity-60"
-                />
-                {suggestions.length > 0 && (
-                  <ul className="absolute z-10 mt-1 max-h-56 w-full overflow-auto rounded-lg border border-ink-700 bg-ink-900 shadow-xl">
-                    {suggestions.map((s) => (
-                      <li key={s.placeId}>
-                        <button onClick={() => pickSuggestion(s)} className="block w-full px-3 py-2 text-start text-xs text-slate-200 hover:bg-ink-800">{s.description}</button>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-              {searchErr && <p className="rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-[11px] text-amber-300">{searchErrMsg(searchErr)}</p>}
-              {!searchErr && searching && query.trim() && <p className="px-1 text-[11px] text-slate-500">{t("common.loading")}</p>}
-              {!searchErr && !searching && query.trim() && suggestions.length === 0 && <p className="px-1 text-[11px] text-slate-500">{t("routes.search.noResults")}</p>}
+              {addOpen && (
+                <div className="space-y-2 rounded-lg border border-ink-700 bg-ink-900/60 p-2">
+                  <div className="relative">
+                    <input
+                      value={query}
+                      onChange={(e) => setQuery(e.target.value)}
+                      placeholder={hasGoogleKey() ? t("routes.searchGoogle") : t("routes.googleMissing")}
+                      disabled={!hasGoogleKey()}
+                      autoFocus
+                      className="w-full rounded-lg border border-ink-700 bg-ink-850 px-3 py-2 text-sm text-slate-100 focus:border-brand focus:outline-none disabled:opacity-60"
+                    />
+                    {suggestions.length > 0 && (
+                      <ul className="absolute z-10 mt-1 max-h-56 w-full overflow-auto rounded-lg border border-ink-700 bg-ink-900 shadow-xl">
+                        {suggestions.map((s) => (
+                          <li key={s.placeId}>
+                            <button onClick={() => pickSuggestion(s)} className="block w-full px-3 py-2 text-start text-xs text-slate-200 hover:bg-ink-800">{s.description}</button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                  {searchErr && <p className="rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-[11px] text-amber-300">{searchErrMsg(searchErr)}</p>}
+                  {!searchErr && searching && query.trim() && <p className="px-1 text-[11px] text-slate-500">{t("common.loading")}</p>}
+                  {!searchErr && !searching && query.trim() && suggestions.length === 0 && <p className="px-1 text-[11px] text-slate-500">{t("routes.search.noResults")}</p>}
+                  <button
+                    type="button"
+                    onClick={() => { setMenu(null); setLineAdd(null); setPendingAdd(null); setPickMode((p) => !p); }}
+                    className={"flex w-full items-center justify-center gap-2 rounded-lg border px-3 py-2 text-sm transition-colors " + (pickMode ? "border-amber-400 bg-amber-500/15 text-amber-200" : "border-ink-700 text-slate-200 hover:border-brand hover:text-white")}
+                  >
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 10c0 7-9 13-9 13S3 17 3 10a9 9 0 0 1 18 0Z" /><circle cx="12" cy="10" r="3" /></svg>
+                    {pickMode ? t("routes.pickHint") : t("routes.pickOnMap")}
+                  </button>
+                </div>
+              )}
 
               {stops.length === 0 && (
                 <div className="rounded-lg border border-dashed border-ink-700 px-3 py-6 text-center text-xs text-slate-500">{t("routes.noStopsYet")}</div>
@@ -758,6 +836,7 @@ export default function RouteEditor({
                   const next = stops[i + 1];
                   const badge = next ? diffBadge(s.arrival, next.arrival) : null;
                   const selected = s.id === selectedId;
+                  const role = roleLabel(i, stops.length);
                   return (
                     <li key={s.id} ref={(el) => { listRefs.current.set(s.id, el); }}>
                       <div
@@ -770,13 +849,22 @@ export default function RouteEditor({
                       >
                         <div className="flex items-center gap-2">
                           <span className="flex h-5 w-5 shrink-0 cursor-grab items-center justify-center rounded-full text-[10px] font-bold text-white" style={{ background: color }} title={t("routes.dragToReorder")}>{i + 1}</span>
+                          {role && (
+                            <span className={"shrink-0 rounded-full border px-1.5 py-0.5 text-[10px] font-medium " + (i === 0 ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-300" : "border-rose-500/40 bg-rose-500/10 text-rose-300")}>
+                              {role}
+                            </span>
+                          )}
                           <input
                             value={s.name}
                             onChange={(e) => updateStop(s.id, { name: e.target.value })}
-                            placeholder={t("routes.stopNamePh")}
+                            placeholder={role ?? t("routes.stopNamePh")}
                             className="min-w-0 flex-1 rounded-md border border-ink-700 bg-ink-850 px-2 py-1 text-xs text-slate-100 focus:border-brand focus:outline-none"
                           />
-                          <button onClick={(e) => { e.stopPropagation(); removeStop(s.id); }} className="shrink-0 rounded-md border border-red-500/40 px-1.5 py-1 text-[10px] text-red-300 hover:bg-red-500/10" title={t("routes.remove")}>✕</button>
+                          <span className="flex shrink-0 flex-col">
+                            <button type="button" aria-label="Move up" disabled={i === 0} onClick={(e) => { e.stopPropagation(); moveStop(i, -1); }} className="min-h-[22px] min-w-[34px] rounded-t-md border border-ink-700 px-2 text-[13px] leading-none text-slate-300 hover:border-brand hover:text-white disabled:opacity-30 md:min-h-0 md:min-w-0 md:px-1.5 md:text-[11px]">▲</button>
+                            <button type="button" aria-label="Move down" disabled={i === stops.length - 1} onClick={(e) => { e.stopPropagation(); moveStop(i, 1); }} className="min-h-[22px] min-w-[34px] rounded-b-md border border-t-0 border-ink-700 px-2 text-[13px] leading-none text-slate-300 hover:border-brand hover:text-white disabled:opacity-30 md:min-h-0 md:min-w-0 md:px-1.5 md:text-[11px]">▼</button>
+                          </span>
+                          <button onClick={(e) => { e.stopPropagation(); removeStop(s.id); }} className="shrink-0 rounded-md border border-red-500/40 px-2.5 py-2 text-[12px] text-red-300 hover:bg-red-500/10 md:px-1.5 md:py-1 md:text-[10px]" title={t("routes.remove")}>✕</button>
                         </div>
                         <div className="mt-1.5 flex items-center gap-3 ps-7 text-[11px] text-slate-500">
                           <label className="flex items-center gap-1">

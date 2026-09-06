@@ -8,6 +8,12 @@ import { useIsSchool } from "@/lib/module";
 // Poll so a manager watching this page sees approved changes / trip starts appear.
 const POLL_MS = 20000;
 
+// Today's date as YYYY-MM-DD in the browser's local time (the manager's zone).
+function localToday(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
 function StatusPill({ status }: { status: BusToday["trip_status"] }) {
   const map: Record<BusToday["trip_status"], { label: string; cls: string }> = {
     active: { label: "En route", cls: "border-brand/40 bg-brand/10 text-brand-sage" },
@@ -23,13 +29,16 @@ export default function ManagerBusesTodayPage() {
   const isSchool = useIsSchool();
   const [buses, setBuses] = useState<BusToday[]>([]);
   const [date, setDate] = useState<string>("");
+  // The day being viewed (YYYY-MM-DD, browser-local). Default = today; future OK.
+  const [selectedDate, setSelectedDate] = useState<string>(localToday());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const isToday = selectedDate === localToday();
 
   const load = useCallback(async () => {
     setError(null);
     try {
-      const d = await getBusesToday();
+      const d = await getBusesToday(selectedDate);
       setBuses(d.buses);
       setDate(d.date);
     } catch (e) {
@@ -38,14 +47,17 @@ export default function ManagerBusesTodayPage() {
       setLoading(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [selectedDate]);
 
   useEffect(() => {
     if (!isSchool) return;
+    setLoading(true);
     load();
+    // Live-poll only when viewing TODAY; other days are static snapshots.
+    if (!isToday) return;
     const id = setInterval(load, POLL_MS);
     return () => clearInterval(id);
-  }, [isSchool, load]);
+  }, [isSchool, load, isToday]);
 
   if (!isSchool) {
     return <div className="text-sm text-slate-400">This page is only available for school organizations.</div>;
@@ -61,10 +73,28 @@ export default function ManagerBusesTodayPage() {
       <div className="mb-6 flex items-end justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold text-white">{t("nav.busesToday")}</h1>
-          <p className="text-sm text-slate-400">
-            {t("busesToday.subtitle")}
-            {date ? ` · ${date}` : ""}
-          </p>
+          <p className="text-sm text-slate-400">{t("busesToday.subtitle")}</p>
+          <div className="mt-2 flex items-center gap-2">
+            <input
+              type="date"
+              value={selectedDate}
+              onChange={(e) => setSelectedDate(e.target.value || localToday())}
+              className="rounded-lg border border-ink-700 bg-ink-850 px-3 py-1.5 text-sm text-slate-100 focus:border-brand focus:outline-none"
+            />
+            {!isToday && (
+              <button
+                onClick={() => setSelectedDate(localToday())}
+                className="rounded-lg border border-ink-700 px-3 py-1.5 text-sm text-slate-300 hover:border-brand hover:text-white"
+              >
+                {t("busesToday.today")}
+              </button>
+            )}
+            {date && !isToday && (
+              <span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-2.5 py-0.5 text-[11px] font-semibold text-amber-300">
+                {selectedDate > localToday() ? t("busesToday.preview") : t("busesToday.pastDay")}
+              </span>
+            )}
+          </div>
         </div>
         {buses.length > 0 && (
           <div className="hidden gap-4 text-right sm:flex">

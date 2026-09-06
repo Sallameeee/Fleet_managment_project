@@ -30,12 +30,17 @@ EVENT_LABELS = {
     "speeding": "Exceeded speed limit",
     "off_route": "Took an off-route path",
     "short_stop": "Stop shorter than required",
+    "long_stop": "Stopped too long away from a stop",
     "offline": "Went offline",
 }
 
 
 def _labelled(events: list) -> list:
     for e in events:
+        # Pre-migration-039 long stops are stored as short_stop with a "Long stop:"
+        # detail prefix (see trips._insert_long_stop_alert) — label them right.
+        if e.get("type") == "short_stop" and str(e.get("detail") or "").startswith("Long stop:"):
+            e["type"] = "long_stop"
         e["label"] = EVENT_LABELS.get(e.get("type"), (e.get("type") or "event").replace("_", " ").title())
     return events
 

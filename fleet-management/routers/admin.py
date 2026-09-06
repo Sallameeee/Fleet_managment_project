@@ -148,7 +148,7 @@ def all_drivers(_admin: dict = Depends(require_super_admin)):
     return {"count": len(out), "drivers": out}
 
 
-# --- Platform staff (super-admin-panel users) --------------------------------
+# --- Platform staff (super-admin-panel users) ---------------------------------
 
 class PlatformUserCreate(BaseModel):
     name: str = Field(..., min_length=1)

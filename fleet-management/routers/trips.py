@@ -19,7 +19,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 import features as feature_flags
+import gps_filter
 import notifications_logic as notify
+from log_settings_logic import effective_log_settings
 from auth import require_permission, require_role
 from capacity_logic import effective_roster, org_module
 from database import supabase
@@ -35,6 +37,16 @@ START_EARLY_WINDOW_MIN = 15
 # Geofence radius (meters) for auto arrival/departure detection. Named so it's
 # a one-line tune. A ping within this distance of a stop counts as "at" it.
 GEOFENCE_RADIUS_M = 75
+
+# Long-stop detection (SHARED, school + university): a bus that stays within
+# LONG_STOP_JITTER_M of one point (and reports ~0 speed) for longer than the
+# org's threshold, while NOT within GEOFENCE_RADIUS_M of any scheduled route
+# stop, raises one `long_stop` alert. The threshold lives in
+# organizations.long_stop_minutes (migration 040); this default applies when the
+# column is missing or NULL. 0 disables detection for the org.
+LONG_STOP_DEFAULT_MIN = 5
+LONG_STOP_JITTER_M = 30      # GPS wobble tolerated while "standing still"
+LONG_STOP_MOVING_MPS = 1.5   # a fix faster than this (~5 km/h) ends the stand-still
 
 # "Today" for a driver's assignments is LOCAL (Africa/Cairo, DST-aware) — see the
 # single shared definition in capacity_logic.
@@ -133,10 +145,16 @@ class PingIn(BaseModel):
 class StopVisitIn(BaseModel):
     """The app reports reaching a stop (arrival) and, on departure, how long it
     actually stayed. Called once on arrival (departure omitted) and again on
-    departure (with departure_time). Idempotent per (trip, stop)."""
+    departure (with departure_time). Idempotent per (trip, stop).
+
+    `skipped=true` records that the bus PASSED this stop without stopping (the
+    driver reached a later stop) — SHARED behaviour for both modules. arrival_time
+    then carries the moment it was passed; no departure/dwell, and no arrival
+    notification is sent."""
     stop_id: str = Field(..., min_length=1)
     arrival_time: datetime
     departure_time: Optional[datetime] = None
+    skipped: bool = False
 
 
 def _enrich(trip: dict, driver_name=None, route_name=None,
@@ -444,6 +462,12 @@ def start_trip(
         )
 
     trip = result.data[0]
+    # School only, best-effort: make sure the org has default speeding/off-route
+    # rules so the Logs feed collects events (detection is a no-op without a rule).
+    # Idempotent; never overrides a manager's own/edited rules; University untouched.
+    from routers.alert_rules import ensure_default_alert_rules
+
+    ensure_default_alert_rules(org_id)
     # School only, best-effort: tell each parent whose child is on this bus today
     # that "<child>'s bus has started" (deduped per trip+parent).
     notify.trip_started(trip)
@@ -589,6 +613,92 @@ def _compute_trip_performance(trip: dict) -> None:
         pass  # metrics are best-effort; never fail trip-end
 
 
+def cancel_active_trips(org_id: str, *, assignment_id: Optional[str] = None,
+                        trip_id: Optional[str] = None) -> list:
+    """Mark every ACTIVE trip matching the filter as `cancelled` (org-scoped).
+
+    SHARED (school + university): this is THE cancel mechanism. It is called
+    when a manager deletes an assignment that is currently being driven, and by
+    POST /trips/{id}/cancel. Once a trip is `cancelled`:
+      * the driver app's pings are rejected (403 by _load_own_active_trip),
+      * GET /trips/{id}/status reports `cancelled` so the app resets itself,
+      * /my-assignments no longer returns it as `active_trip`.
+    Returns the updated trip rows (possibly empty). Never raises — a failure
+    here must not block the caller's own operation (e.g. the assignment delete).
+    """
+    try:
+        q = (
+            supabase.table("trips")
+            .update({"status": "cancelled", "ended_at": _now_iso()})
+            .eq("org_id", org_id)
+            .eq("status", "active")
+        )
+        if assignment_id is not None:
+            q = q.eq("assignment_id", assignment_id)
+        if trip_id is not None:
+            q = q.eq("id", trip_id)
+        if assignment_id is None and trip_id is None:
+            return []  # never cancel an org's every trip by accident
+        return q.execute().data or []
+    except Exception:
+        return []
+
+
+@router.post("/{trip_id}/cancel")
+def cancel_trip(
+    trip_id: str,
+    current_user: dict = Depends(require_permission("manage_trips")),
+):
+    """Manager cancels a running trip (org-scoped). Idempotent: an already
+    completed/cancelled trip is returned unchanged with a message."""
+    org_id = current_user["org_id"]
+    rows = (
+        supabase.table("trips").select("*").eq("id", trip_id).eq("org_id", org_id).limit(1).execute().data
+    )
+    if not rows:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No trip with id '{trip_id}' exists in your organization.",
+        )
+    trip = rows[0]
+    if trip["status"] != "active":
+        enriched = _enrich_one(trip)
+        enriched["message"] = f"This trip is already {trip['status']}."
+        return enriched
+    rows = cancel_active_trips(org_id, trip_id=trip_id)
+    if not rows:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Could not cancel trip.",
+        )
+    return _enrich_one(rows[0])
+
+
+@router.get("/{trip_id}/status")
+def trip_status(trip_id: str, current_user: dict = Depends(require_role("driver"))):
+    """Lightweight liveness check for the driver app's running trip. Unlike the
+    ping path this answers 200 for ANY status so the app can tell `cancelled`
+    (manager cancelled it -> reset the UI) from `completed`. 404 if the trip
+    does not exist in the caller's org (or is another driver's — same message
+    so ids can't be probed)."""
+    org_id = current_user["org_id"]
+    rows = (
+        supabase.table("trips")
+        .select("id, driver_id, status, ended_at")
+        .eq("id", trip_id)
+        .eq("org_id", org_id)
+        .limit(1)
+        .execute()
+        .data
+    )
+    if not rows or rows[0]["driver_id"] != current_user["id"]:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No trip with id '{trip_id}' exists in your organization.",
+        )
+    return {"id": rows[0]["id"], "status": rows[0]["status"], "ended_at": rows[0].get("ended_at")}
+
+
 def _load_own_active_trip(trip_id: str, current_user: dict) -> dict:
     """Load a trip and assert: exists, in caller's org, ACTIVE, owned by caller.
 
@@ -632,65 +742,117 @@ def post_pings(
     body: Union[PingIn, List[PingIn]],
     current_user: dict = Depends(require_role("driver")),
 ):
+    """Ingest one fix or an offline backlog batch (original device timestamps
+    are stored as-is). The shared GPS plausibility rule (gps_filter.py) runs
+    here ONCE for every consumer: exact duplicates are not stored, physically
+    impossible fixes are stored RAW but tagged is_outlier (migration 041; before
+    it they are stored untagged and every reader re-filters), and detection
+    only ever sees clean fixes."""
     # Ownership + active-state check (one indexed lookup). org_id/driver_id are
     # taken from the trip/token below — never from the request body.
     trip = _load_own_active_trip(trip_id, current_user)
     org_id = trip["org_id"]
     driver_id = trip["driver_id"]
 
-    # Normalize single-or-batch into a list. The app may buffer offline samples
-    # and flush several at once.
     pings = body if isinstance(body, list) else [body]
     if not pings:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No pings provided.",
-        )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No pings provided.")
 
     # Normalize device timestamps to tz-aware UTC datetimes once, so the same
-    # values feed both the insert and the chronological geofence pass.
+    # values feed both the insert and the chronological detection pass.
     server_now = datetime.now(timezone.utc)
     norm = []
     for p in pings:
         dt = p.recorded_at or server_now
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
-        norm.append(
-            {"lat": p.lat, "lng": p.lng, "speed": p.speed,
-             "heading": p.heading, "recorded_dt": dt}
-        )
+        norm.append({"lat": p.lat, "lng": p.lng, "speed": p.speed, "heading": p.heading,
+                     "recorded_dt": dt, "recorded_at": dt.isoformat()})
+    norm.sort(key=lambda n: n["recorded_dt"])
+    min_ts, max_ts = norm[0]["recorded_dt"], norm[-1]["recorded_dt"]
 
-    rows = [
-        {
-            "trip_id": trip_id,
-            "org_id": org_id,  # from the trip, not the body
-            "driver_id": driver_id,  # from the token, not the body
-            "lat": n["lat"],
-            "lng": n["lng"],
-            "speed": n["speed"],
-            "heading": n["heading"],
+    # 1. Fixes already stored for these timestamps (a re-sent buffer row, or two
+    #    flushes racing) are not new data — skip them. Migration 042's unique
+    #    index makes this airtight; this check covers the pre-migration case.
+    existing_ts: set = set()
+    try:
+        have = (
+            supabase.table("location_pings").select("recorded_at").eq("trip_id", trip_id)
+            .gte("recorded_at", min_ts.isoformat()).lte("recorded_at", max_ts.isoformat())
+            .limit(5000).execute().data
+        )
+        existing_ts = {gps_filter.parse_dt(r["recorded_at"]) for r in have}
+    except Exception:
+        pass
+    fresh = [n for n in norm if n["recorded_dt"] not in existing_ts]
+    skipped_stored = len(norm) - len(fresh)
+
+    # 2. Judge the batch against the last ACCEPTED stored fix (real history),
+    #    so an offline backlog is filtered exactly like live fixes.
+    anchor = _last_accepted_before(trip_id, min_ts)
+    accepted, rejected = gps_filter.filter_fixes(fresh, anchor=anchor)
+    dup_in_batch = [r for r in rejected if r["reject_reason"] == "duplicate"]
+    outliers = [r for r in rejected if r["reject_reason"] != "duplicate"]
+
+    def _row(n: dict, tag: bool) -> dict:
+        row = {
+            "trip_id": trip_id, "org_id": org_id, "driver_id": driver_id,
+            "lat": n["lat"], "lng": n["lng"], "speed": n["speed"], "heading": n["heading"],
             "recorded_at": n["recorded_dt"].isoformat(),
         }
-        for n in norm
-    ]
+        if tag:
+            row["is_outlier"] = bool(n.get("reject_reason"))
+            row["reject_reason"] = n.get("reject_reason")
+            row["implied_kmh"] = n.get("implied_kmh")
+        return row
 
-    # Single batch insert — keeps this high-frequency path to one DB round-trip.
+    to_store = accepted + outliers  # raw outliers kept (tagged); duplicates are not data
+    stored = 0
+    if to_store:
+        try:
+            result = supabase.table("location_pings").insert([_row(n, True) for n in to_store]).execute()
+            stored = len(result.data)
+        except Exception as exc:
+            msg = str(exc)
+            if "is_outlier" in msg or "reject_reason" in msg or "implied_kmh" in msg:
+                # Migration 041 not applied yet: store raw, untagged (readers re-filter).
+                try:
+                    result = supabase.table("location_pings").insert([_row(n, False) for n in to_store]).execute()
+                    stored = len(result.data)
+                except Exception as exc2:
+                    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Could not record pings: {exc2}")
+            elif "uq_location_pings_trip_recorded_at" in msg or "duplicate key" in msg:
+                # Raced with another flush of the same rows (post-042): nothing lost.
+                stored = 0
+            else:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Could not record pings: {exc}")
+
+    # --- Detection on the CLEAN, new fixes only: geofence stop events, offline
+    # gaps, speeding, off_route, long_stop. Best-effort (never fails capture). ---
+    detection = _process_pings(trip, accepted, anchor=anchor) if accepted else {"skipped": "no new accepted fixes"}
+
+    return {
+        "recorded": stored,
+        "accepted": len(accepted),
+        "rejected": [{"recorded_at": r["recorded_at"], "reason": r["reject_reason"], "implied_kmh": r.get("implied_kmh")} for r in outliers],
+        "duplicates_skipped": skipped_stored + len(dup_in_batch),
+        "trip_id": trip_id,
+        "detection": detection,
+    }
+
+
+def _last_accepted_before(trip_id: str, ts: datetime) -> Optional[dict]:
+    """Newest ACCEPTED stored fix strictly before `ts` (the anchor for judging a
+    batch, and the reference for offline-gap detection). None at trip start."""
     try:
-        result = supabase.table("location_pings").insert(rows).execute()
-    except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Could not record pings: {exc}",
+        rows = gps_filter.select_pings_tolerant(
+            lambda cols: supabase.table("location_pings").select(cols).eq("trip_id", trip_id)
+            .lt("recorded_at", ts.isoformat()).order("recorded_at", desc=True).limit(30)
         )
-
-    # --- Detection on the just-inserted pings: geofence stop events + rule-based
-    # speeding/off_route. Runs AFTER the insert so ingestion stays lean, and is
-    # best-effort (never fails capture). Speeding/off_route rebuild a bounded
-    # window of STORED pings around this batch (true-predecessor seed + replay
-    # dedupe), so buffered/out-of-order flushes are handled correctly. ---
-    detection = _process_pings(trip, norm)
-
-    return {"recorded": len(result.data), "trip_id": trip_id, "detection": detection}
+    except Exception:
+        return None
+    clean = gps_filter.clean_pings(rows)
+    return clean[-1] if clean else None
 
 
 @router.get("/{trip_id}/route-stops")
@@ -769,6 +931,9 @@ class AttendanceIn(BaseModel):
     student_id: str = Field(..., min_length=1)
     boarded: bool
     drop_off_stop: Optional[str] = None  # afternoon: the stop the student got off at
+    # Undo/correct a mistake: delete this student's record for the trip so they go
+    # back to "not marked yet". (boarded is ignored when clear=true.)
+    clear: bool = False
 
 
 def _trip_session(trip: dict) -> str:
@@ -835,9 +1000,22 @@ def trip_students(trip_id: str, current_user: dict = Depends(require_role("drive
     )
     session = _trip_session(trip)
 
+    # Route-stop order, so the roster is sorted the way the bus reaches the stops.
+    stop_order = {(st.get("name") or "").strip().lower(): st.get("stop_order") for st in stops}
+    _LAST = 10**9  # students with no/unknown stop sort to the end
+
     out = []
     for s in students:
-        a = att_by_student.get(s["id"]) or {}
+        a = att_by_student.get(s["id"])  # None → this student has NOT been marked yet
+        # Tri-state so the app can move MARKED students to a "Checked" section and
+        # tell "not marked yet" apart from "marked absent":
+        #   present  = a row exists and boarded=true
+        #   absent   = a row exists and boarded=false (explicitly not on the bus)
+        #   None     = no row yet (still to mark)
+        attendance_status = None
+        if a is not None:
+            attendance_status = "present" if a.get("boarded") else "absent"
+        stop_name = (a or {}).get("drop_off_stop") or s.get("effective_stop") or s.get("drop_off_stop")
         out.append(
             {
                 "student_id": s["id"],
@@ -846,15 +1024,17 @@ def trip_students(trip_id: str, current_user: dict = Depends(require_role("drive
                 "grade": s.get("grade"),
                 "student_phone": s.get("student_phone"),
                 "parent_phone": s.get("parent_phone"),
-                "boarded": a.get("boarded", False),
+                "boarded": bool((a or {}).get("boarded", False)),
+                "attendance_status": attendance_status,
                 # Afternoon: the recorded drop-off, else today's EFFECTIVE stop
                 # (a moved-in child uses the stop the change request asked for).
-                "drop_off_stop": a.get("drop_off_stop") or s.get("effective_stop") or s.get("drop_off_stop"),
+                "drop_off_stop": stop_name,
                 # True when an approved change put this child on your bus today.
                 "moved_in": bool(s.get("moved_in")),
             }
         )
-    out.sort(key=lambda x: (x["name"] or "").lower())
+    # Sort by the route order of each student's stop, then by name.
+    out.sort(key=lambda x: (stop_order.get((x["drop_off_stop"] or "").strip().lower(), _LAST) or _LAST, (x["name"] or "").lower()))
     return {
         "trip_id": trip_id,
         "count": len(out),
@@ -888,6 +1068,14 @@ def record_attendance(
     if not st.data:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="That student is not in your organization.")
 
+    # Undo / correct a mistake: remove the record so the student is unmarked again.
+    if body.clear:
+        try:
+            supabase.table("attendance").delete().eq("trip_id", trip_id).eq("student_id", body.student_id).execute()
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Could not clear attendance: {exc}")
+        return {"student_id": body.student_id, "attendance_status": None, "trip_id": trip_id}
+
     trip_date = (trip.get("started_at") or "")[:10] or datetime.now(LOCAL_TZ).date().isoformat()
     # Only the afternoon (drop-off) session records WHERE the student got off.
     session = _trip_session(trip)
@@ -906,7 +1094,14 @@ def record_attendance(
         row = supabase.table("attendance").upsert(payload, on_conflict="trip_id,student_id").execute().data[0]
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Could not record attendance: {exc}")
-    return {"student_id": body.student_id, "boarded": row["boarded"], "session": session, "drop_off_stop": row.get("drop_off_stop"), "trip_id": trip_id}
+    return {
+        "student_id": body.student_id,
+        "boarded": row["boarded"],
+        "attendance_status": "present" if row["boarded"] else "absent",
+        "session": session,
+        "drop_off_stop": row.get("drop_off_stop"),
+        "trip_id": trip_id,
+    }
 
 
 class BoardingFlagIn(BaseModel):
@@ -998,7 +1193,7 @@ def record_stop_visit(
     stop = st[0]
 
     arrival = body.arrival_time
-    departure = body.departure_time
+    departure = None if body.skipped else body.departure_time
     if arrival.tzinfo is None:
         arrival = arrival.replace(tzinfo=timezone.utc)
     if departure is not None and departure.tzinfo is None:
@@ -1016,6 +1211,7 @@ def record_stop_visit(
         "departure_time": departure.isoformat() if departure else None,
         "planned_dwell_seconds": (stop["dwell_minutes"] or 0) * 60,
         "actual_dwell_seconds": actual,
+        "status": "skipped" if body.skipped else "visited",
     }
     try:
         row = (
@@ -1025,14 +1221,28 @@ def record_stop_visit(
             .data[0]
         )
     except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Could not record stop visit: {exc}",
-        )
-    # School only, best-effort: notify parents whose child's drop-off stop is THIS
-    # stop that "<child>'s bus has arrived" (deduped per trip+student, so the
-    # arrival + departure calls for the same stop don't double-notify).
-    notify.child_arrived(trip, body.stop_id)
+        # Resilient to deploy order: if migration 036 (stop_visits.status) hasn't
+        # run yet, retry WITHOUT the new column so normal visit recording keeps
+        # working. Skipped stops just stay unmarked until the migration is applied.
+        if "status" in str(exc):
+            try:
+                row = (
+                    supabase.table("stop_visits")
+                    .upsert({k: v for k, v in payload.items() if k != "status"}, on_conflict="trip_id,stop_id")
+                    .execute()
+                    .data[0]
+                )
+            except Exception as exc2:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Could not record stop visit: {exc2}")
+        else:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Could not record stop visit: {exc}")
+    # A SKIPPED stop was never reached — do NOT fire the arrival notification.
+    # (child_arrived is already school-gated; this also keeps a school bus from
+    # telling parents "arrived" at a stop it drove past. University never hits it.)
+    if not body.skipped:
+        # School only, best-effort: notify parents whose child's drop-off stop is
+        # THIS stop that "<child>'s bus has arrived" (deduped per trip+student).
+        notify.child_arrived(trip, body.stop_id)
     return row
 
 
@@ -1045,15 +1255,18 @@ def list_stop_visits(
     org_id = current_user["org_id"]
     _load_org_trip(trip_id, org_id)  # org-scope guard
 
-    visits = (
-        supabase.table("stop_visits")
-        .select("id, stop_id, stop_order, arrival_time, departure_time, planned_dwell_seconds, actual_dwell_seconds")
-        .eq("trip_id", trip_id)
-        .eq("org_id", org_id)
-        .order("stop_order", desc=False)
-        .execute()
-        .data
-    )
+    base_cols = "id, stop_id, stop_order, arrival_time, departure_time, planned_dwell_seconds, actual_dwell_seconds"
+    try:
+        visits = (
+            supabase.table("stop_visits").select(base_cols + ", status")
+            .eq("trip_id", trip_id).eq("org_id", org_id).order("stop_order", desc=False).execute().data
+        )
+    except Exception:
+        # migration 036 (status column) not applied yet — read the legacy shape.
+        visits = (
+            supabase.table("stop_visits").select(base_cols)
+            .eq("trip_id", trip_id).eq("org_id", org_id).order("stop_order", desc=False).execute().data
+        )
     stop_ids = {v["stop_id"] for v in visits if v.get("stop_id")}
     names = {}
     if stop_ids:
@@ -1102,23 +1315,63 @@ def _nearest_stop_m(lat: float, lng: float, stops: list) -> float:
     return min(_haversine_m(lat, lng, s["lat"], s["lng"]) for s in stops)
 
 
-def _process_pings(trip: dict, norm_pings: list) -> dict:
-    """Detect stop arrivals/departures (geofence) and rule-based speeding /
-    off_route incidents for a batch of pings. Best-effort: any error is swallowed
-    (pings are already saved).
+def _org_wide_rules(rules: list, settings: dict, type_: str) -> list:
+    """Effective rules of one type. Targeted alert_rules (specific vehicles /
+    drivers) always apply. The ORG-WIDE limit comes from Edit Logs once a
+    manager has saved it (explicit); otherwise a legacy org-wide alert_rules
+    row ('all') if one exists; otherwise the catalog default (if enabled)."""
+    s = settings.get(type_) or {}
+    def _targeted(r):
+        return r.get("target_kind") in ("vehicles", "drivers") and bool(r.get("target_ids"))
+    targeted = [r for r in rules if r["type"] == type_ and _targeted(r)]
+    legacy_all = [r for r in rules if r["type"] == type_ and not _targeted(r)]
+    synthesized = [{"id": f"log-settings:{type_}", "name": "Edit Logs", "type": type_,
+                    "threshold": s.get("threshold"), "target_kind": "all", "target_ids": None}]
+    if s.get("explicit"):
+        org_wide = synthesized if s.get("enabled") else []
+    elif legacy_all:
+        org_wide = legacy_all
+    else:
+        org_wide = synthesized if s.get("enabled", True) and s.get("threshold") is not None else []
+    return org_wide + targeted
+
+
+def _insert_alert(trip: dict, type_: str, lat, lng, detail: str, occurred_dt) -> None:
+    supabase.table("alerts").insert(
+        {"org_id": trip["org_id"], "trip_id": trip["id"], "driver_id": trip["driver_id"],
+         "type": type_, "lat": lat, "lng": lng, "detail": detail, "occurred_at": occurred_dt.isoformat()}
+    ).execute()
+
+
+def _existing_alert_times(trip_id: str, type_: str, since, until, detail_prefix: str = "") -> set:
+    """occurred_at of alerts of `type_` in a range (replay-dedupe). Filters by
+    detail prefix in Python rather than `.eq("type", ...)` so a not-yet-migrated
+    enum value never errors."""
+    rows = (
+        supabase.table("alerts").select("type, detail, occurred_at").eq("trip_id", trip_id)
+        .gte("occurred_at", since.isoformat()).lte("occurred_at", until.isoformat()).execute().data
+    )
+    return {
+        _parse_dt(a["occurred_at"]) for a in rows
+        if a.get("type") == type_ or (detail_prefix and str(a.get("detail") or "").startswith(detail_prefix))
+    }
+
+
+def _process_pings(trip: dict, norm_pings: list, anchor: Optional[dict] = None) -> dict:
+    """Detect stop arrivals/departures (geofence) and the logged incidents —
+    offline gaps, speeding, off_route, long_stop — for a batch of CLEAN pings
+    (gps_filter already dropped duplicates and impossible fixes). Best-effort:
+    any error is swallowed (pings are already saved).
+
+    Every incident type reads the org's Edit Logs settings (enabled + threshold)
+    via log_settings_logic.effective_log_settings — shared by both modules.
 
     Geofence de-duplication: a stop is "currently inside / open" iff a stop_events
-    row exists for (trip_id, stop_id) with arrived_at set and departed_at NULL. We
-    load those once, keep them in `open_by_stop`, and only ARRIVE when a stop is
-    NOT open — so continuous in-radius pings never spawn duplicate events.
-
-    Incident detection (speeding/off_route) is handled by _detect_incidents, which
-    rebuilds a bounded window of STORED pings around this batch so it stays correct
-    under out-of-order / buffered delivery (see that function).
+    row exists for (trip_id, stop_id) with arrived_at set and departed_at NULL.
     """
     summary = {
-        "arrivals": 0, "departures": 0, "short_stop_alerts": 0,
-        "speeding_alerts": 0, "off_route_alerts": 0,
+        "arrivals": 0, "departures": 0, "short_stop_alerts": 0, "speeding_alerts": 0,
+        "off_route_alerts": 0, "long_stop_alerts": 0, "offline_alerts": 0,
     }
     try:
         trip_id = trip["id"]
@@ -1126,119 +1379,209 @@ def _process_pings(trip: dict, norm_pings: list) -> dict:
         driver_id = trip["driver_id"]
         route_id = trip["route_id"]
 
-        # Load the route's stops and the org's active rules ONCE for the batch.
-        stops = (
-            supabase.table("route_stops")
-            .select("id, name, lat, lng, dwell_minutes")
-            .eq("route_id", route_id)
-            .execute()
-        ).data
+        settings = effective_log_settings(org_id)
+        stops = []
+        geometry = None
+        if route_id:
+            stops = (
+                supabase.table("route_stops").select("id, name, lat, lng, dwell_minutes")
+                .eq("route_id", route_id).execute()
+            ).data
+            try:
+                rr = supabase.table("routes").select("geometry").eq("id", route_id).limit(1).execute().data
+                geometry = gps_filter.route_line_coords(rr[0].get("geometry")) if rr else None
+            except Exception:
+                geometry = None
         rules = _load_active_rules(org_id)
         ordered = sorted(norm_pings, key=lambda x: x["recorded_dt"])
 
-        # short_stop reconciliation: legacy always-on UNLESS a short_stop rule is
-        # defined, in which case its targeting governs whether alerts fire.
+        _detect_offline_gap(trip, anchor, ordered, settings, summary)
+
+        # short_stop: Edit Logs on/off, then legacy rule targeting (always-on when
+        # no short_stop rule exists).
         shortstop_rules = [r for r in rules if r["type"] == "short_stop"]
-        shortstop_applies = (not shortstop_rules) or any(
-            _rule_applies(r, trip) for r in shortstop_rules
+        shortstop_applies = bool((settings.get("short_stop") or {}).get("enabled", True)) and (
+            (not shortstop_rules) or any(_rule_applies(r, trip) for r in shortstop_rules)
         )
 
         if not stops:
-            # No stops -> no geofence/short_stop/off_route, but speeding can still
-            # fire (it needs no route geometry).
-            _detect_incidents(trip, ordered, rules, stops, summary)
+            # No stops -> no geofence/short_stop. Speeding, off-route (against the
+            # route line if there is one), long stops and offline gaps still run.
+            _detect_incidents(trip, ordered, rules, settings, summary)
+            _detect_off_route(trip, ordered, rules, settings, stops, geometry, summary)
+            _detect_long_stop(trip, ordered, stops, settings, summary)
             return summary
 
-        # Currently-open events for this trip (arrived, not yet departed).
         open_rows = (
-            supabase.table("stop_events")
-            .select("id, stop_id, arrived_at")
-            .eq("trip_id", trip_id)
-            .is_("departed_at", "null")
-            .execute()
+            supabase.table("stop_events").select("id, stop_id, arrived_at")
+            .eq("trip_id", trip_id).is_("departed_at", "null").execute()
         ).data
-        open_by_stop = {
-            r["stop_id"]: {"id": r["id"], "arrived_at": _parse_dt(r["arrived_at"])}
-            for r in open_rows
-        }
-        # Most recent ping time known to be inside each open stop. Seed from
-        # arrival so a cross-batch departure never predates the arrival.
+        open_by_stop = {r["stop_id"]: {"id": r["id"], "arrived_at": _parse_dt(r["arrived_at"])} for r in open_rows}
         last_inside = {sid: ev["arrived_at"] for sid, ev in open_by_stop.items()}
 
-        # CHRONOLOGICAL order is required, or arrival/departure pairing breaks.
-        for n in sorted(norm_pings, key=lambda x: x["recorded_dt"]):
+        for n in ordered:
             t = n["recorded_dt"]
             for s in stops:
                 sid = s["id"]
-                inside = (
-                    _haversine_m(n["lat"], n["lng"], s["lat"], s["lng"])
-                    <= GEOFENCE_RADIUS_M
-                )
+                inside = _haversine_m(n["lat"], n["lng"], s["lat"], s["lng"]) <= GEOFENCE_RADIUS_M
                 if inside:
                     if sid not in open_by_stop:
-                        # ARRIVAL: first ping inside a stop with no open event.
                         ev = (
-                            supabase.table("stop_events")
-                            .insert(
-                                {
-                                    "trip_id": trip_id,
-                                    "org_id": org_id,
-                                    "stop_id": sid,
-                                    "arrived_at": t.isoformat(),
-                                    "departed_at": None,
-                                    "confirmed": True,  # geofence-confirmed
-                                    "was_short": False,
-                                }
-                            )
-                            .execute()
+                            supabase.table("stop_events").insert(
+                                {"trip_id": trip_id, "org_id": org_id, "stop_id": sid,
+                                 "arrived_at": t.isoformat(), "departed_at": None,
+                                 "confirmed": True, "was_short": False}
+                            ).execute()
                         ).data[0]
                         open_by_stop[sid] = {"id": ev["id"], "arrived_at": t}
                         summary["arrivals"] += 1
-                    # Arrived now or still sitting inside: advance last-inside.
                     last_inside[sid] = t
                 elif sid in open_by_stop:
-                    # DEPARTURE: previously inside, this ping is now outside.
                     ev = open_by_stop[sid]
                     departed = last_inside.get(sid, ev["arrived_at"])
                     dwell_sec = (departed - ev["arrived_at"]).total_seconds()
                     required_sec = (s["dwell_minutes"] or 0) * 60
-                    was_short = dwell_sec < required_sec  # any shortfall, no grace
-
+                    was_short = dwell_sec < required_sec
                     supabase.table("stop_events").update(
                         {"departed_at": departed.isoformat(), "was_short": was_short}
                     ).eq("id", ev["id"]).execute()
                     summary["departures"] += 1
-
-                    # was_short stays factual on the event; the ALERT is gated by
-                    # short_stop rule targeting (legacy always-on if no rule).
                     if was_short and shortstop_applies:
-                        detail = (
-                            f"Stopped {dwell_sec / 60.0:.1f} min at {s['name']}, "
-                            f"required {s['dwell_minutes']} min"
-                        )
-                        supabase.table("alerts").insert(
-                            {
-                                "org_id": org_id,
-                                "trip_id": trip_id,
-                                "driver_id": driver_id,
-                                "type": "short_stop",
-                                "lat": s["lat"],
-                                "lng": s["lng"],
-                                "detail": detail,
-                                "occurred_at": departed.isoformat(),
-                            }
-                        ).execute()
+                        detail = f"Stopped {dwell_sec / 60.0:.1f} min at {s['name']}, required {s['dwell_minutes']} min"
+                        _insert_alert(trip, "short_stop", s["lat"], s["lng"], detail, departed)
                         summary["short_stop_alerts"] += 1
-
                     del open_by_stop[sid]
                     last_inside.pop(sid, None)
 
-        # Rule-based incident detection (bounded-window, rising-edge, dedup'd).
-        _detect_incidents(trip, ordered, rules, stops, summary)
+        _detect_incidents(trip, ordered, rules, settings, summary)
+        _detect_off_route(trip, ordered, rules, settings, stops, geometry, summary)
+        _detect_long_stop(trip, ordered, stops, settings, summary)
     except Exception as exc:
-        # Never let detection trouble fail ping capture.
         summary["error"] = f"detection skipped: {exc}"
     return summary
+
+
+def _detect_offline_gap(trip: dict, anchor: Optional[dict], ordered: list, settings: dict, summary: dict) -> None:
+    """'offline' = no GPS data RECORDED for longer than the threshold during an
+    active trip (a buffered-then-flushed stretch has continuous timestamps and is
+    NOT offline — the bus was tracked, just uploaded late). Checked between the
+    last stored accepted fix and this batch, and inside the batch. One alert per
+    gap, at the moment data stopped."""
+    s = settings.get("offline") or {}
+    if not s.get("enabled", True) or not ordered:
+        return
+    thr = timedelta(minutes=float(s.get("threshold") or 5))
+    seq = ([anchor] if anchor else []) + ordered
+    if len(seq) < 2:
+        return
+    since = seq[0]["recorded_dt"]
+    flagged = _existing_alert_times(trip["id"], "offline", since, seq[-1]["recorded_dt"])
+    for a, b in zip(seq, seq[1:]):
+        gap = b["recorded_dt"] - a["recorded_dt"]
+        if gap >= thr and a["recorded_dt"] not in flagged:
+            detail = f"No GPS data for {gap.total_seconds() / 60:.0f} min (limit {thr.total_seconds() / 60:.0f} min)"
+            _insert_alert(trip, "offline", a["lat"], a["lng"], detail, a["recorded_dt"])
+            flagged.add(a["recorded_dt"])
+            summary["offline_alerts"] = summary.get("offline_alerts", 0) + 1
+
+
+def _long_stop_threshold_min(org_id: str, settings: Optional[dict] = None) -> int:
+    """Org's long-stop threshold in minutes: Edit Logs (explicit) -> the
+    organizations.long_stop_minutes column (040) -> LONG_STOP_DEFAULT_MIN.
+    0 = off. Never raises."""
+    s = (settings or {}).get("long_stop") or {}
+    if s.get("explicit"):
+        return int(s.get("threshold") or 0) if s.get("enabled", True) else 0
+    if not s.get("enabled", True):
+        return 0
+    try:
+        rows = supabase.table("organizations").select("long_stop_minutes").eq("id", org_id).limit(1).execute().data
+        v = rows[0].get("long_stop_minutes") if rows else None
+        return LONG_STOP_DEFAULT_MIN if v is None else max(0, int(v))
+    except Exception:
+        return int(s.get("threshold") or LONG_STOP_DEFAULT_MIN)
+
+
+def _detect_long_stop(trip: dict, ordered_batch: list, stops: list, settings: dict, summary: dict) -> None:
+    """Flag a bus standing still for longer than the org threshold while NOT at
+    a scheduled stop. SHARED for both modules; best-effort. Writes to the same
+    `alerts` table the Logs page / Alerts page / manager bell read.
+
+    "Standing still" (documented proxy — GPS has no odometer): an ANCHOR fix
+    starts a stand-still; every later fix within LONG_STOP_JITTER_M of the
+    anchor AND not moving (speed missing or < LONG_STOP_MOVING_MPS) extends it;
+    anything else starts a new anchor. Once (fix time - anchor time) >=
+    threshold and the anchor is farther than GEOFENCE_RADIUS_M from every route
+    stop (or the route has no stops), ONE alert is written with occurred_at =
+    the anchor time. The window is rebuilt from STORED clean pings, so buffered
+    / out-of-order delivery works; the anchor time is stable while the bus keeps
+    standing, so later batches de-duplicate against the existing alert.
+    LIMITATION: a traffic jam / red light longer than the threshold, or a stop on
+    ANOTHER route, is still flagged — the manager sees the location.
+    """
+    if not ordered_batch:
+        return
+    threshold_min = _long_stop_threshold_min(trip["org_id"], settings)
+    if threshold_min <= 0:
+        return
+    threshold = timedelta(minutes=threshold_min)
+    trip_id = trip["id"]
+    min_ts = ordered_batch[0]["recorded_dt"]
+    max_ts = ordered_batch[-1]["recorded_dt"]
+    lookback = max(threshold * 2, timedelta(minutes=15))
+    rows = gps_filter.select_pings_tolerant(
+        lambda cols: supabase.table("location_pings").select(cols).eq("trip_id", trip_id)
+        .gte("recorded_at", (min_ts - lookback).isoformat()).lte("recorded_at", max_ts.isoformat())
+        .order("recorded_at", desc=False).limit(5000)
+    )
+    window = gps_filter.clean_pings([r for r in rows if r.get("lat") is not None and r.get("lng") is not None])
+    if len(window) < 2:
+        return
+    flagged = _existing_alert_times(trip_id, "long_stop", min_ts - lookback, max_ts, detail_prefix="Long stop:")
+    # A stand-still longer than the lookback: later windows start MID-stand-still
+    # (new anchor time), so also de-duplicate by PLACE against the trip's recent
+    # long-stop alerts — the bus has not moved, it is the same event.
+    recent_places = [
+        (a["lat"], a["lng"]) for a in supabase.table("alerts").select("type, detail, lat, lng, occurred_at")
+        .eq("trip_id", trip_id).gte("occurred_at", (min_ts - timedelta(hours=3)).isoformat()).execute().data
+        if a.get("type") == "long_stop" or str(a.get("detail") or "").startswith("Long stop:")
+    ]
+
+    def _already_logged_here(p):
+        return any(_haversine_m(p["lat"], p["lng"], la, ln) <= LONG_STOP_JITTER_M for la, ln in recent_places if la is not None)
+
+    anchor = window[0]
+    for p in window[1:]:
+        moving = p.get("speed") is not None and float(p["speed"]) >= LONG_STOP_MOVING_MPS
+        drifted = _haversine_m(anchor["lat"], anchor["lng"], p["lat"], p["lng"]) > LONG_STOP_JITTER_M
+        if moving or drifted:
+            anchor = p
+            continue
+        standing = p["recorded_dt"] - anchor["recorded_dt"]
+        if standing < threshold or anchor["recorded_dt"] in flagged or _already_logged_here(anchor):
+            continue
+        at_stop = bool(stops) and _nearest_stop_m(anchor["lat"], anchor["lng"], stops) <= GEOFENCE_RADIUS_M
+        if at_stop:
+            flagged.add(anchor["recorded_dt"])
+            continue
+        near_m = _nearest_stop_m(anchor["lat"], anchor["lng"], stops) if stops else None
+        where = f"{near_m:.0f} m from the nearest stop" if near_m is not None else "on a route with no stops"
+        detail = f"Long stop: stationary for {standing.total_seconds() / 60:.0f} min ({where}; limit {threshold_min} min)"
+        _insert_long_stop_alert(trip, anchor, detail)
+        flagged.add(anchor["recorded_dt"])
+        summary["long_stop_alerts"] = summary.get("long_stop_alerts", 0) + 1
+
+
+def _insert_long_stop_alert(trip: dict, anchor: dict, detail: str) -> None:
+    """Insert the long_stop alert. Resilient pre-migration 039: if the alerts
+    `type` enum does not have 'long_stop' yet, store it as 'short_stop' with the
+    'Long stop:' detail prefix (logs.py labels it correctly from the prefix)."""
+    try:
+        _insert_alert(trip, "long_stop", anchor["lat"], anchor["lng"], detail, anchor["recorded_dt"])
+    except Exception as exc:
+        if "enum" not in str(exc).lower():
+            raise
+        _insert_alert(trip, "short_stop", anchor["lat"], anchor["lng"], detail, anchor["recorded_dt"])
 
 
 def _parse_ping_row(r: dict) -> dict:
@@ -1249,86 +1592,56 @@ def _parse_ping_row(r: dict) -> dict:
     }
 
 
-def _detect_incidents(trip, ordered_batch, rules, stops, summary) -> None:
-    """Bounded-window speeding/off_route detection, correct under out-of-order /
-    buffered delivery.
-
-    Rather than seeding from the global-latest ping, we rebuild a small window of
-    the trip's STORED pings around this batch's time span:
-      * true predecessor — the one ping immediately BEFORE the span (seeds prev),
-      * the span itself — batch pings plus any pre-existing pings in that range,
-      * one follower immediately AFTER the span — so a ping inserted in the middle
-        re-evaluates the ping that now follows it.
-    An edge is emitted only if no identical alert already exists in that range
-    (replay-dedupe), so re-flushing the same buffered span adds nothing.
-
-    Exact for our adjacent-pair edges (a ping's edge depends only on its immediate
-    timestamp predecessor). It is insert-only: it never RETRACTS an earlier alert
-    that a late-arriving ping demotes from being an edge (see notes to the user).
-    """
+def _detect_incidents(trip, ordered_batch, rules, settings, summary) -> None:
+    """Bounded-window SPEEDING detection, correct under out-of-order / buffered
+    delivery: rebuild a small window of the trip's STORED clean pings around this
+    batch's span (true predecessor + span + one follower), emit rising edges
+    only, and de-duplicate against alerts already in that range (replay-safe).
+    The org-wide limit comes from Edit Logs (see _org_wide_rules)."""
     trip_id = trip["id"]
     speeding_rules = [
-        r for r in rules
-        if r["type"] == "speeding" and r.get("threshold") is not None
-        and _rule_applies(r, trip)
+        r for r in _org_wide_rules(rules, settings, "speeding")
+        if r.get("threshold") is not None and _rule_applies(r, trip)
     ]
-    offroute_rules = [
-        r for r in rules
-        if r["type"] == "off_route" and r.get("threshold") is not None
-        and _rule_applies(r, trip)
-    ] if stops else []
-    if (not speeding_rules and not offroute_rules) or not ordered_batch:
+    if not speeding_rules or not ordered_batch:
         return
 
     min_ts = ordered_batch[0]["recorded_dt"]
     max_ts = ordered_batch[-1]["recorded_dt"]
 
     def _pings(*filters):
-        q = (
-            supabase.table("location_pings")
-            .select("lat, lng, speed, recorded_at")
-            .eq("trip_id", trip_id)
-        )
-        for col, op, val in filters:
-            q = getattr(q, op)(col, val)
-        return q
+        def build(cols):
+            q = supabase.table("location_pings").select(cols).eq("trip_id", trip_id)
+            for col, op, val in filters:
+                q = getattr(q, op)(col, val)
+            return q
+        return build
 
-    # True predecessor: latest stored ping strictly before the span.
-    pred_rows = _pings(("recorded_at", "lt", min_ts.isoformat())).order(
-        "recorded_at", desc=True
-    ).limit(1).execute().data
-    predecessor = _parse_ping_row(pred_rows[0]) if pred_rows else None
+    pred_rows = gps_filter.select_pings_tolerant(
+        lambda cols: _pings(("recorded_at", "lt", min_ts.isoformat()))(cols).order("recorded_at", desc=True).limit(30)
+    )
+    pred_clean = gps_filter.clean_pings(pred_rows)
+    predecessor = _parse_ping_row(pred_clean[-1]) if pred_clean else None
 
-    # Span (batch + any pre-existing in range) and one follower after it.
-    span_rows = _pings(
-        ("recorded_at", "gte", min_ts.isoformat()),
-        ("recorded_at", "lte", max_ts.isoformat()),
-    ).order("recorded_at", desc=False).execute().data
-    fol_rows = _pings(("recorded_at", "gt", max_ts.isoformat())).order(
-        "recorded_at", desc=False
-    ).limit(1).execute().data
-
-    window = [_parse_ping_row(r) for r in span_rows] + [
-        _parse_ping_row(r) for r in fol_rows
-    ]
-    window.sort(key=lambda p: p["recorded_dt"])
+    span_rows = gps_filter.select_pings_tolerant(
+        lambda cols: _pings(("recorded_at", "gte", min_ts.isoformat()), ("recorded_at", "lte", max_ts.isoformat()))(cols)
+        .order("recorded_at", desc=False)
+    )
+    fol_rows = gps_filter.select_pings_tolerant(
+        lambda cols: _pings(("recorded_at", "gt", max_ts.isoformat()))(cols).order("recorded_at", desc=False).limit(1)
+    )
+    window = [_parse_ping_row(r) for r in gps_filter.clean_pings(span_rows + fol_rows)]
     if not window:
         return
     window_max = window[-1]["recorded_dt"]
 
-    # Existing alerts in the window range -> replay-dedupe set.
     existing = (
-        supabase.table("alerts")
-        .select("type, detail, occurred_at")
-        .eq("trip_id", trip_id)
-        .gte("occurred_at", min_ts.isoformat())
-        .lte("occurred_at", window_max.isoformat())
-        .execute()
+        supabase.table("alerts").select("type, detail, occurred_at").eq("trip_id", trip_id)
+        .gte("occurred_at", min_ts.isoformat()).lte("occurred_at", window_max.isoformat()).execute()
     ).data
     seen = {(a["type"], _parse_dt(a["occurred_at"]), a["detail"]) for a in existing}
 
     _detect_speeding(trip, window, predecessor, speeding_rules, seen, summary)
-    _detect_off_route(trip, window, predecessor, offroute_rules, stops, seen, summary)
 
 
 def _emit_alert(trip, type_, lat, lng, detail, occurred_dt, seen, summary, counter):
@@ -1355,18 +1668,24 @@ def _emit_alert(trip, type_, lat, lng, detail, occurred_dt, seen, summary, count
 def _detect_speeding(trip, window, predecessor, srules, seen, summary) -> None:
     """Rising-edge speeding over the window, one alert per incident per rule.
     `srules` is already filtered to applicable speeding rules with a threshold."""
+    # GPS speed is stored in METERS/SECOND (Geolocator), but the rule threshold is
+    # in KM/H — convert before comparing, or real driving (≤24 m/s ≈ 86 km/h) would
+    # never exceed an 80 "km/h" limit and speeding would never fire.
+    MPS_TO_KMH = 3.6
+
+    def _kmh(mps):
+        return None if mps is None else mps * MPS_TO_KMH
+
     for r in srules:
         t = float(r["threshold"])
-        prev_over = bool(
-            predecessor and predecessor["speed"] is not None
-            and predecessor["speed"] > t
-        )
+        pred_kmh = _kmh(predecessor["speed"]) if predecessor else None
+        prev_over = bool(pred_kmh is not None and pred_kmh > t)
         for p in window:
-            spd = p["speed"]
-            cur_over = spd is not None and spd > t
+            spd_kmh = _kmh(p["speed"])
+            cur_over = spd_kmh is not None and spd_kmh > t
             if cur_over and not prev_over:
                 detail = (
-                    f"Speed {spd:.0f} km/h exceeded limit {t:.0f} km/h "
+                    f"Speed {spd_kmh:.0f} km/h exceeded limit {t:.0f} km/h "
                     f"(rule '{r['name']}')"
                 )
                 _emit_alert(trip, "speeding", p["lat"], p["lng"], detail,
@@ -1374,29 +1693,81 @@ def _detect_speeding(trip, window, predecessor, srules, seen, summary) -> None:
             prev_over = cur_over
 
 
-def _detect_off_route(trip, window, predecessor, orules, stops, seen, summary) -> None:
-    """Rising-edge off_route over the window, nearest-stop distance metric.
-    `orules` is already filtered to applicable off_route rules with a threshold."""
-    if not orules or not stops:
+def _detect_off_route(trip, ordered_batch, rules, settings, stops, geometry, summary) -> None:
+    """Off-route = farther than the limit from the PLANNED ROUTE LINE
+    (routes.geometry, the road-snapped path the manager drew) for longer than the
+    configured duration. Falls back to nearest-stop distance only when the route
+    has no line (legacy routes) — stops can be kilometres apart, so that proxy is
+    far noisier. One alert per off-route episode, at the moment it started
+    (occurred_at = first fix beyond the limit), de-duplicated across batches by
+    that start time. Runs on STORED clean pings over a lookback window so an
+    episode spanning several batches is judged once, with its true start."""
+    orules = [
+        r for r in _org_wide_rules(rules, settings, "off_route")
+        if r.get("threshold") is not None and _rule_applies(r, trip)
+    ]
+    if not orules or not ordered_batch or (not geometry and not stops):
         return
-    dists = [(p, _nearest_stop_m(p["lat"], p["lng"], stops)) for p in window]
-    prev_dist = (
-        _nearest_stop_m(predecessor["lat"], predecessor["lng"], stops)
-        if predecessor else None
+    trip_id = trip["id"]
+    duration_s = int((settings.get("off_route") or {}).get("duration_s") or 0)
+    min_ts = ordered_batch[0]["recorded_dt"]
+    max_ts = ordered_batch[-1]["recorded_dt"]
+    lookback = max(timedelta(seconds=duration_s * 2), timedelta(minutes=5))
+    rows = gps_filter.select_pings_tolerant(
+        lambda cols: supabase.table("location_pings").select(cols).eq("trip_id", trip_id)
+        .gte("recorded_at", (min_ts - lookback).isoformat()).lte("recorded_at", max_ts.isoformat())
+        .order("recorded_at", desc=False).limit(5000)
     )
+    window = gps_filter.clean_pings(rows)
+    if not window:
+        return
+
+    def _dist(p):
+        d = gps_filter.point_to_polyline_m(p["lat"], p["lng"], geometry) if geometry else None
+        return d if d is not None else _nearest_stop_m(p["lat"], p["lng"], stops)
+
+    # An episode longer than the lookback would otherwise look like it STARTED at
+    # the window's first fix and be logged again later with a new start time.
+    # Extend the window back (up to 60 min) until its first fix is on-route for
+    # the tightest limit, so the true start is always inside the window.
+    tightest = min(float(r["threshold"]) for r in orules)
+    back = min_ts - lookback
+    extra = 0
+    while window and _dist(window[0]) > tightest and extra < 6:
+        extra += 1
+        older_from = back - timedelta(minutes=10)
+        older = gps_filter.select_pings_tolerant(
+            lambda cols: supabase.table("location_pings").select(cols).eq("trip_id", trip_id)
+            .gte("recorded_at", older_from.isoformat()).lt("recorded_at", back.isoformat())
+            .order("recorded_at", desc=False).limit(2000)
+        )
+        back = older_from
+        if not older:
+            break
+        window = gps_filter.clean_pings(older + window)
+
+    dists = [(p, _dist(p)) for p in window]
+    flagged = _existing_alert_times(trip_id, "off_route", back, max_ts)
+    basis = "route line" if geometry else "nearest stop"
     for r in orules:
-        d_limit = float(r["threshold"])
-        prev_over = prev_dist is not None and prev_dist > d_limit
+        limit = float(r["threshold"])
+        run_start = None
+        run_d0 = 0.0
         for p, d in dists:
-            cur_over = d > d_limit
-            if cur_over and not prev_over:
-                detail = (
-                    f"Off route by {d:.0f} m (limit {d_limit:.0f} m, "
-                    f"rule '{r['name']}')"
-                )
-                _emit_alert(trip, "off_route", p["lat"], p["lng"], detail,
-                            p["recorded_dt"], seen, summary, "off_route_alerts")
-            prev_over = cur_over
+            if d > limit:
+                if run_start is None:
+                    run_start, run_d0 = p, d
+                held = (p["recorded_dt"] - run_start["recorded_dt"]).total_seconds()
+                if held >= duration_s and run_start["recorded_dt"] not in flagged:
+                    detail = (
+                        f"Off route by {run_d0:.0f} m from the {basis} for {max(held, 0):.0f} s "
+                        f"(limit {limit:.0f} m / {duration_s} s, rule '{r['name']}')"
+                    )
+                    _insert_alert(trip, "off_route", run_start["lat"], run_start["lng"], detail, run_start["recorded_dt"])
+                    flagged.add(run_start["recorded_dt"])
+                    summary["off_route_alerts"] += 1
+            else:
+                run_start = None
 
 
 def _load_org_trip(trip_id: str, org_id: str) -> dict:
@@ -1426,16 +1797,17 @@ def list_trip_pings(
     org_id = current_user["org_id"]
     _load_org_trip(trip_id, org_id)  # org-scope guard
 
-    result = (
-        supabase.table("location_pings")
-        .select("id, lat, lng, speed, heading, recorded_at, created_at")
-        .eq("trip_id", trip_id)
-        .eq("org_id", org_id)
+    rows = gps_filter.select_pings_tolerant(
+        lambda cols: supabase.table("location_pings").select(cols)
+        .eq("trip_id", trip_id).eq("org_id", org_id)
         .order("recorded_at", desc=True)  # newest first, for the live path
         .limit(limit)
-        .execute()
     )
-    return {"count": len(result.data), "trip_id": trip_id, "pings": result.data}
+    # Shared plausibility rule at the read boundary: duplicates and impossible
+    # (tagged or not) fixes never reach a map.
+    clean = gps_filter.clean_pings(rows)
+    pings = [{k: p.get(k) for k in ("id", "lat", "lng", "speed", "heading", "recorded_at", "created_at")} for p in reversed(clean)]
+    return {"count": len(pings), "trip_id": trip_id, "pings": pings}
 
 
 @router.get("/{trip_id}/stop-events")

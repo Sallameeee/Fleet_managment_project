@@ -116,6 +116,22 @@ class TrackingHoursUpdate(BaseModel):
     tracking_end_time: Optional[time] = Field(
         None, description="Local end of live-tracking, e.g. 18:00."
     )
+    # Long-stop detection threshold (minutes). Omit to leave unchanged; 0 turns
+    # the detection off for the org. Needs migration 040 (column) to persist.
+    long_stop_minutes: Optional[int] = Field(None, ge=0, le=180)
+
+
+def _long_stop_setting(org_id: str) -> dict:
+    """{'long_stop_minutes': int, 'long_stop_configurable': bool}. Resilient to
+    the column not existing yet (migration 040): reports the default + False."""
+    from routers.trips import LONG_STOP_DEFAULT_MIN
+
+    try:
+        rows = supabase.table("organizations").select("long_stop_minutes").eq("id", org_id).limit(1).execute().data
+        v = rows[0].get("long_stop_minutes") if rows else None
+        return {"long_stop_minutes": LONG_STOP_DEFAULT_MIN if v is None else int(v), "long_stop_configurable": True}
+    except Exception:
+        return {"long_stop_minutes": LONG_STOP_DEFAULT_MIN, "long_stop_configurable": False}
 
 
 @router.get("/tracking-hours", tags=["tracking (public)"])
@@ -139,6 +155,7 @@ def get_tracking_hours(
         "tracking_start_time": start,
         "tracking_end_time": end,
         "mode": "always_on" if (not start or not end) else "windowed",
+        **_long_stop_setting(org_id),
     }
 
 
@@ -170,11 +187,18 @@ def set_tracking_hours(
         "tracking_start_time": start.isoformat() if start else None,
         "tracking_end_time": end.isoformat() if end else None,
     }
+    if body.long_stop_minutes is not None:
+        payload["long_stop_minutes"] = body.long_stop_minutes
     try:
         result = (
             supabase.table("organizations").update(payload).eq("id", org_id).execute()
         )
     except Exception as exc:
+        if "long_stop_minutes" in str(exc):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Long-stop threshold is not available yet: run migration 040_org_long_stop_setting.sql.",
+            )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Could not update tracking hours: {exc}",
@@ -190,6 +214,7 @@ def set_tracking_hours(
         "tracking_start_time": o.get("tracking_start_time"),
         "tracking_end_time": o.get("tracking_end_time"),
         "mode": "always_on" if start is None else "windowed",
+        **_long_stop_setting(org_id),
     }
 
 
