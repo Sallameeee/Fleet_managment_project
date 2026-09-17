@@ -150,14 +150,33 @@ def _build_report(
     actual_m_by_trip = defaultdict(float)
     speed_by_driver = defaultdict(lambda: {"max": None, "sum": 0.0, "cnt": 0})
     if trip_ids:
-        pings = (
-            supabase.table("location_pings")
-            .select("trip_id, lat, lng, speed, recorded_at")
-            .in_("trip_id", trip_ids)
-            .order("trip_id", desc=False)
-            .order("recorded_at", desc=False)
-            .execute()
-        ).data
+        # PostgREST caps ONE response at 1000 rows. A single real bus day is
+        # ~5000+ fixes, so an unpaged query silently truncated the period's
+        # pings and most trips reported 0 km / no speed. Page with .range()
+        # until a short page, exactly like routers/history.py.
+        pings = []
+        PAGE = 1000
+        offset = 0
+        cols = "trip_id, lat, lng, speed, recorded_at, is_outlier"  # tag honoured (041); falls back below
+        while True:
+            try:
+                chunk = (
+                    supabase.table("location_pings").select(cols)
+                    .in_("trip_id", trip_ids)
+                    .order("trip_id", desc=False)
+                    .order("recorded_at", desc=False)
+                    .range(offset, offset + PAGE - 1)
+                    .execute()
+                ).data
+            except Exception as exc:
+                if "is_outlier" in str(exc) and "is_outlier" in cols:
+                    cols = "trip_id, lat, lng, speed, recorded_at"  # migration 041 not applied
+                    continue
+                raise
+            pings.extend(chunk)
+            if len(chunk) < PAGE:
+                break
+            offset += PAGE
         pings = gps_filter.clean_grouped(pings)  # shared plausibility rule (no spikes/duplicates in km & speed stats)
         prev_tid = None
         prev_lat = prev_lng = None

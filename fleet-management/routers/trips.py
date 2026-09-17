@@ -134,12 +134,27 @@ class TripStart(BaseModel):
 class PingIn(BaseModel):
     """One GPS sample from the driver's device. org_id/driver_id are NEVER
     taken from here — they come from the trip/token."""
-    lat: float
-    lng: float
+    # Range-checked: a fix outside the globe (lat 95, lng 200) is not a
+    # position and would draw garbage on every map — 422 instead of storing it.
+    lat: float = Field(..., ge=-90, le=90)
+    lng: float = Field(..., ge=-180, le=180)
     speed: Optional[float] = None
     heading: Optional[float] = None
     # Device timestamp. Defaults to server now() at insert time if missing.
     recorded_at: Optional[datetime] = None
+
+
+# A device clock that runs AHEAD of real time produces fixes "from the future".
+# Anything more than this ahead of the server clock is unambiguously wrong: it
+# is stored raw but tagged is_outlier (reject_reason 'future_timestamp') so no
+# map/report/detector ever consumes it (a single such fix otherwise raises a
+# bogus "offline for N million minutes" alert and stretches History replays).
+FUTURE_SKEW_TOLERANCE = timedelta(minutes=10)
+# After a driver ends a trip, the phone may still hold buffered fixes recorded
+# BEFORE the end (a flush that lost the race with /end, or an offline tail).
+# Those are genuine data from the trip, so a completed trip keeps accepting
+# fixes recorded up to its ended_at (+ tolerance). Anything later is refused.
+COMPLETED_TRIP_GRACE = timedelta(seconds=90)
 
 
 class StopVisitIn(BaseModel):
@@ -456,6 +471,28 @@ def start_trip(
     try:
         result = supabase.table("trips").insert(payload).execute()
     except Exception as exc:
+        msg = str(exc)
+        # Two starts racing (double tap, two phones, a retried request) both
+        # pass the check above; the partial unique indexes from migration 044
+        # (one ACTIVE trip per driver / per assignment) reject the loser here.
+        # Answer exactly like the guard would have: 409 + the trip that won.
+        if "uq_trips_one_active" in msg or "duplicate key" in msg:
+            won = (
+                supabase.table("trips")
+                .select("*")
+                .eq("org_id", org_id)
+                .eq("status", "active")
+                .or_(f"driver_id.eq.{driver_id},assignment_id.eq.{body.assignment_id}")
+                .limit(1)
+                .execute()
+            ).data
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "message": "You already have an active trip. End it before starting another.",
+                    "active_trip": _enrich_one(won[0]) if won else None,
+                },
+            )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Could not start trip: {exc}",
@@ -614,7 +651,7 @@ def _compute_trip_performance(trip: dict) -> None:
 
 
 def cancel_active_trips(org_id: str, *, assignment_id: Optional[str] = None,
-                        trip_id: Optional[str] = None) -> list:
+                        trip_id: Optional[str] = None, driver_id: Optional[str] = None) -> list:
     """Mark every ACTIVE trip matching the filter as `cancelled` (org-scoped).
 
     SHARED (school + university): this is THE cancel mechanism. It is called
@@ -637,7 +674,11 @@ def cancel_active_trips(org_id: str, *, assignment_id: Optional[str] = None,
             q = q.eq("assignment_id", assignment_id)
         if trip_id is not None:
             q = q.eq("id", trip_id)
-        if assignment_id is None and trip_id is None:
+        if driver_id is not None:
+            # A driver being DEACTIVATED: their running trip can never be ended
+            # from the app again (every call is 403), so close it out here.
+            q = q.eq("driver_id", driver_id)
+        if assignment_id is None and trip_id is None and driver_id is None:
             return []  # never cancel an org's every trip by accident
         return q.execute().data or []
     except Exception:
@@ -736,6 +777,105 @@ def _load_own_active_trip(trip_id: str, current_user: dict) -> dict:
     return trip
 
 
+def _load_own_trip_for_pings(trip_id: str, current_user: dict) -> dict:
+    """Ping-path variant of _load_own_active_trip: ACTIVE trips as before, and a
+    COMPLETED trip is returned too (with ended_at) so post_pings can accept the
+    backlog recorded before it ended. Cancelled / other statuses stay 403."""
+    org_id = current_user["org_id"]
+    result = (
+        supabase.table("trips")
+        .select("id, org_id, driver_id, route_id, vehicle_id, status, ended_at")
+        .eq("id", trip_id)
+        .eq("org_id", org_id)
+        .limit(1)
+        .execute()
+    )
+    if not result.data:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No trip with id '{trip_id}' exists in your organization.",
+        )
+    trip = result.data[0]
+    if trip["driver_id"] != current_user["id"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This trip belongs to another driver. You can only ping your own.",
+        )
+    if trip["status"] not in ("active", "completed"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"This trip is '{trip['status']}', not active. Only active trips accept pings.",
+        )
+    return trip
+
+
+def _store_pings(to_store: list, row_fn) -> int:
+    """Insert fixes so that a row already present for (trip_id, recorded_at) is
+    SKIPPED, never the whole batch. Two devices (or a retried flush) posting
+    overlapping-but-different batches used to collide on migration 042's unique
+    index and the loser's ENTIRE batch was dropped while the app got a 201 and
+    deleted it from its buffer — silent loss. Returns the number of rows stored.
+
+    1. upsert ... ON CONFLICT DO NOTHING (needs 042's unique index) — one
+       round-trip, returns exactly the rows that were new.
+    2. 042 missing -> plain insert (the pre-check above already skipped
+       stored timestamps); a race that still collides falls to
+    3. row-by-row insert, skipping only the duplicate rows.
+    Each step retries once WITHOUT the outlier-tag columns when 041 is missing.
+    """
+    tag = True
+
+    def _rows():
+        return [row_fn(n, tag) for n in to_store]
+
+    def _missing_tag_cols(msg: str) -> bool:
+        return "is_outlier" in msg or "reject_reason" in msg or "implied_kmh" in msg
+
+    def _is_dup(msg: str) -> bool:
+        return "duplicate key" in msg or "uq_location_pings" in msg
+
+    # 1. upsert, ignoring rows whose (trip_id, recorded_at) already exists
+    for _ in range(2):
+        try:
+            res = (
+                supabase.table("location_pings")
+                .upsert(_rows(), on_conflict="trip_id,recorded_at", ignore_duplicates=True)
+                .execute()
+            )
+            return len(res.data)
+        except Exception as exc:
+            msg = str(exc)
+            if tag and _missing_tag_cols(msg):
+                tag = False
+                continue
+            if "unique or exclusion constraint" in msg or "42P10" in msg:
+                break  # migration 042 not applied: no conflict target -> plain insert
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Could not record pings: {msg}")
+
+    # 2. plain insert (pre-042 databases)
+    for _ in range(2):
+        try:
+            return len(supabase.table("location_pings").insert(_rows()).execute().data)
+        except Exception as exc:
+            msg = str(exc)
+            if tag and _missing_tag_cols(msg):
+                tag = False
+                continue
+            if _is_dup(msg):
+                break  # collided with a concurrent flush: keep the non-duplicates
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Could not record pings: {msg}")
+
+    # 3. row by row, skipping only the rows that already exist
+    stored = 0
+    for n in to_store:
+        try:
+            stored += len(supabase.table("location_pings").insert(row_fn(n, tag)).execute().data)
+        except Exception as exc:
+            if not _is_dup(str(exc)):
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Could not record pings: {exc}")
+    return stored
+
+
 @router.post("/{trip_id}/pings", status_code=status.HTTP_201_CREATED)
 def post_pings(
     trip_id: str,
@@ -748,9 +888,9 @@ def post_pings(
     impossible fixes are stored RAW but tagged is_outlier (migration 041; before
     it they are stored untagged and every reader re-filters), and detection
     only ever sees clean fixes."""
-    # Ownership + active-state check (one indexed lookup). org_id/driver_id are
-    # taken from the trip/token below — never from the request body.
-    trip = _load_own_active_trip(trip_id, current_user)
+    # Ownership + state check (one indexed lookup). org_id/driver_id are taken
+    # from the trip/token below — never from the request body.
+    trip = _load_own_trip_for_pings(trip_id, current_user)
     org_id = trip["org_id"]
     driver_id = trip["driver_id"]
 
@@ -771,28 +911,50 @@ def post_pings(
     norm.sort(key=lambda n: n["recorded_dt"])
     min_ts, max_ts = norm[0]["recorded_dt"], norm[-1]["recorded_dt"]
 
+    # A COMPLETED trip only takes the backlog that was recorded while it ran
+    # (see COMPLETED_TRIP_GRACE). Later fixes mean the phone is still tracking
+    # a trip that ended elsewhere — 403, so the app resets itself as before.
+    if trip["status"] == "completed":
+        ended = gps_filter.parse_dt(trip.get("ended_at")) if trip.get("ended_at") else server_now
+        if max_ts > ended + COMPLETED_TRIP_GRACE:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="This trip is 'completed', not active. Only active trips accept pings.",
+            )
+
+    # 0. Clock sanity: fixes from the future are tagged, never trusted.
+    future_cut = server_now + FUTURE_SKEW_TOLERANCE
+    future = [n for n in norm if n["recorded_dt"] > future_cut]
+    for n in future:
+        n["reject_reason"] = "future_timestamp"
+        n["implied_kmh"] = None
+    norm = [n for n in norm if n["recorded_dt"] <= future_cut]
+    if norm:
+        min_ts, max_ts = norm[0]["recorded_dt"], norm[-1]["recorded_dt"]
+
     # 1. Fixes already stored for these timestamps (a re-sent buffer row, or two
     #    flushes racing) are not new data — skip them. Migration 042's unique
     #    index makes this airtight; this check covers the pre-migration case.
     existing_ts: set = set()
-    try:
-        have = (
-            supabase.table("location_pings").select("recorded_at").eq("trip_id", trip_id)
-            .gte("recorded_at", min_ts.isoformat()).lte("recorded_at", max_ts.isoformat())
-            .limit(5000).execute().data
-        )
-        existing_ts = {gps_filter.parse_dt(r["recorded_at"]) for r in have}
-    except Exception:
-        pass
+    if norm:
+        try:
+            have = (
+                supabase.table("location_pings").select("recorded_at").eq("trip_id", trip_id)
+                .gte("recorded_at", min_ts.isoformat()).lte("recorded_at", max_ts.isoformat())
+                .limit(5000).execute().data
+            )
+            existing_ts = {gps_filter.parse_dt(r["recorded_at"]) for r in have}
+        except Exception:
+            pass
     fresh = [n for n in norm if n["recorded_dt"] not in existing_ts]
     skipped_stored = len(norm) - len(fresh)
 
     # 2. Judge the batch against the last ACCEPTED stored fix (real history),
     #    so an offline backlog is filtered exactly like live fixes.
-    anchor = _last_accepted_before(trip_id, min_ts)
-    accepted, rejected = gps_filter.filter_fixes(fresh, anchor=anchor)
+    anchor = _last_accepted_before(trip_id, min_ts) if norm else None
+    accepted, rejected = gps_filter.filter_fixes(fresh, anchor=anchor) if fresh else ([], [])
     dup_in_batch = [r for r in rejected if r["reject_reason"] == "duplicate"]
-    outliers = [r for r in rejected if r["reject_reason"] != "duplicate"]
+    outliers = [r for r in rejected if r["reject_reason"] != "duplicate"] + future
 
     def _row(n: dict, tag: bool) -> dict:
         row = {
@@ -809,23 +971,7 @@ def post_pings(
     to_store = accepted + outliers  # raw outliers kept (tagged); duplicates are not data
     stored = 0
     if to_store:
-        try:
-            result = supabase.table("location_pings").insert([_row(n, True) for n in to_store]).execute()
-            stored = len(result.data)
-        except Exception as exc:
-            msg = str(exc)
-            if "is_outlier" in msg or "reject_reason" in msg or "implied_kmh" in msg:
-                # Migration 041 not applied yet: store raw, untagged (readers re-filter).
-                try:
-                    result = supabase.table("location_pings").insert([_row(n, False) for n in to_store]).execute()
-                    stored = len(result.data)
-                except Exception as exc2:
-                    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Could not record pings: {exc2}")
-            elif "uq_location_pings_trip_recorded_at" in msg or "duplicate key" in msg:
-                # Raced with another flush of the same rows (post-042): nothing lost.
-                stored = 0
-            else:
-                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Could not record pings: {exc}")
+        stored = _store_pings(to_store, _row)
 
     # --- Detection on the CLEAN, new fixes only: geofence stop events, offline
     # gaps, speeding, off_route, long_stop. Best-effort (never fails capture). ---

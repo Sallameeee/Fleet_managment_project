@@ -326,6 +326,15 @@ def update_driver(
         ).data[0]
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Could not update driver: {exc}")
+    # Deactivating a driver who is mid-trip: every further call from their phone
+    # is 403 (deactivated), so the app drops its buffer and resets — but the trip
+    # row would stay `active` forever (blocking the driver if re-activated and
+    # showing as "working now"). Close it out through THE shared cancel path,
+    # exactly as when a manager cancels a trip. SHARED: school + university.
+    if body.is_active is False:
+        from routers.trips import cancel_active_trips
+
+        cancel_active_trips(org_id, driver_id=driver_id)
     return {
         "id": row["id"],
         "name": row["name"],
