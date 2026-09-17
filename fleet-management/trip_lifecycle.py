@@ -196,7 +196,7 @@ def build_messages(type_: str, p: dict) -> tuple[str, str]:
         en = f"Connection restored {fmt_time_en(t)} after {en_minutes(gap)} offline"
         ar = f"عاد الاتصال {fmt_time_ar(t)} بعد انقطاع {ar_minutes(gap)}"
         if buffered:
-            en += f" — {buffered} buffered fixes uploaded with their original timestamps"
+            en += f" — {buffered} buffered {'fix' if buffered == 1 else 'fixes'} uploaded with {'its' if buffered == 1 else 'their'} original {'timestamp' if buffered == 1 else 'timestamps'}"
             ar += f" — تم رفع {ar_num(buffered)} نقطة مخزّنة بتوقيتها الأصلي"
         return (en, ar)
     if type_ == "trip_ended":
