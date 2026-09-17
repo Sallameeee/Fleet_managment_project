@@ -489,6 +489,23 @@ export default function FullViewPage() {
                   <span className="text-slate-500">{focused.on_trip ? t("full.onTripNow") : t("full.lastTrip")}</span>
                   <span>{focused.on_trip ? "—" : sinceLabel(focused.last_ended_at, t)}</span>
                 </div>
+                {/* Trip-lifecycle signals: an open connection-loss episode + the phone's last state */}
+                {focused.on_trip && (focused.connection_lost_at || focused.last_battery != null) && (
+                  <div className="flex justify-between gap-2">
+                    <span className="text-slate-500">{focused.connection_lost_at ? t("live.connectionLost") : t("live.battery")}</span>
+                    <span className={focused.connection_lost_at ? "text-amber-300" : ""}>
+                      {focused.connection_lost_at ? sinceLabel(focused.connection_lost_at, t) : ""}
+                      {focused.last_battery != null ? `${focused.connection_lost_at ? " · " : ""}${focused.last_battery}%` : ""}
+                      {focused.last_net_state && focused.last_net_state !== "online" ? ` · ${focused.last_net_state}` : ""}
+                    </span>
+                  </div>
+                )}
+                {!focused.on_trip && focused.end_reason && (
+                  <div className="flex justify-between gap-2">
+                    <span className="text-slate-500">{t("hist.endReason")}</span>
+                    <span className="truncate">{t(`hist.endReason.${focused.end_reason}`)}</span>
+                  </div>
+                )}
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-slate-500">{t("common.route")}</span>
                   <span className="flex min-w-0 items-center gap-1.5">

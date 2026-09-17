@@ -9,6 +9,12 @@ const TYPE_STYLE: Record<string, { cls: string; icon: string }> = {
   off_route: { cls: "border-amber-500/40 bg-amber-500/10 text-amber-300", icon: "🧭" },
   short_stop: { cls: "border-sky-500/40 bg-sky-500/10 text-sky-300", icon: "⏱" },
   offline: { cls: "border-slate-500/40 bg-slate-500/10 text-slate-300", icon: "📴" },
+  long_stop: { cls: "border-violet-500/40 bg-violet-500/10 text-violet-300", icon: "⏸" },
+  // trip-lifecycle log points
+  trip_started: { cls: "border-emerald-500/40 bg-emerald-500/10 text-emerald-300", icon: "▶" },
+  trip_ended: { cls: "border-rose-500/40 bg-rose-500/10 text-rose-300", icon: "■" },
+  connection_lost: { cls: "border-slate-500/40 bg-slate-500/10 text-slate-300", icon: "📵" },
+  connection_restored: { cls: "border-blue-500/40 bg-blue-500/10 text-blue-300", icon: "📶" },
 };
 const DEFAULT_STYLE = { cls: "border-slate-500/40 bg-slate-500/10 text-slate-300", icon: "•" };
 
@@ -33,7 +39,7 @@ export default function EventList({
   showDriver?: boolean;
   emptyText: string;
 }) {
-  const { t } = useT();
+  const { t, lang } = useT();
   if (events.length === 0) {
     return <div className="rounded-lg border border-ink-800 px-4 py-6 text-center text-sm text-slate-500">{emptyText}</div>;
   }
@@ -53,9 +59,13 @@ export default function EventList({
                   <span className="text-slate-500"> · {t("logs.route")} </span>
                   <span className="text-slate-200">{e.route_name ?? "—"}</span>
                   <span className="text-slate-500"> — </span>
-                  <span className={"font-semibold " + st.cls.split(" ").find((c) => c.startsWith("text-"))}>{e.label}</span>
+                  <span className={"font-semibold " + st.cls.split(" ").find((c) => c.startsWith("text-"))}>
+                    {lang === "ar" && e.label_ar ? e.label_ar : e.label}
+                  </span>
                 </div>
-                {e.detail && <div className="mt-0.5 text-xs text-slate-400">{e.detail}</div>}
+                {(e.detail || e.detail_ar) && (
+                  <div className="mt-0.5 text-xs text-slate-400">{lang === "ar" && e.detail_ar ? e.detail_ar : e.detail}</div>
+                )}
                 <div className="mt-1 text-[11px] text-slate-500">{fmtTime(e.occurred_at)}</div>
               </div>
             </div>

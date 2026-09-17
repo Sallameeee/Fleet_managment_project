@@ -56,6 +56,14 @@ function fmtClock(ms: number): string {
 function pingMs(iso: string): number {
   return new Date(iso.replace(" ", "T")).getTime();
 }
+// Marker style per trip-lifecycle log point.
+const EVENT_MARKER: Record<string, { color: string; glyph: string }> = {
+  trip_started: { color: "#16a34a", glyph: "▶" },
+  trip_ended: { color: "#dc2626", glyph: "■" },
+  connection_lost: { color: "#6b7280", glyph: "!" },
+  connection_restored: { color: "#2563eb", glyph: "↻" },
+};
+
 function fmtClockIso(iso: string | null): string {
   if (!iso) return "—";
   const d = new Date(iso.replace(" ", "T"));
@@ -71,7 +79,9 @@ function fmtDwell(sec: number | null): string {
 }
 
 export default function ManagerHistoryPage() {
-  const { t } = useT();
+  const { t, lang } = useT();
+  const langRef = useRef(lang);
+  langRef.current = lang;
   const toast = useToast();
 
   const [kind, setKind] = useState<"drivers" | "vehicles">("drivers");
@@ -91,6 +101,7 @@ export default function ManagerHistoryPage() {
   const mapRef = useRef<MapboxMap | null>(null);
   const [mapReady, setMapReady] = useState(false);
   const markerRef = useRef<mapboxgl.Marker | null>(null);
+  const eventMarkersRef = useRef<mapboxgl.Marker[]>([]); // trip-lifecycle log points
   const selectedRef = useRef<HistoryTrip | null>(null);
 
   useEffect(() => {
@@ -140,6 +151,8 @@ export default function ManagerHistoryPage() {
       markerRef.current.remove();
       markerRef.current = null;
     }
+    eventMarkersRef.current.forEach((m) => m.remove());
+    eventMarkersRef.current = [];
     if (!trip) return;
     const bounds = new mapboxgl.LngLatBounds();
 
@@ -189,6 +202,24 @@ export default function ManagerHistoryPage() {
     }
     if (coords.length) {
       ensureMarker(map).setLngLat(coords[0]).addTo(map);
+    }
+    // Trip-lifecycle log points as markers (start ▶, end ■, lost 📵, restored 📶)
+    // with the bilingual message as a popup. Shared for both modules.
+    for (const ev of trip.events ?? []) {
+      if (ev.lat == null || ev.lng == null) continue;
+      const st = EVENT_MARKER[ev.type] ?? { color: "#64748b", glyph: "•" };
+      const el = document.createElement("div");
+      el.style.cssText =
+        `width:24px;height:24px;border-radius:9999px;background:${st.color};border:2px solid #fff;color:#fff;font-size:12px;font-weight:700;` +
+        `display:flex;align-items:center;justify-content:center;box-shadow:0 1px 4px rgba(0,0,0,.5);cursor:pointer`;
+      el.textContent = st.glyph;
+      const text = (langRef.current === "ar" && ev.detail_ar ? ev.detail_ar : ev.detail) ?? ev.type;
+      const m = new mapboxgl.Marker({ element: el })
+        .setLngLat([ev.lng, ev.lat])
+        .setPopup(new mapboxgl.Popup({ offset: 14, closeButton: false }).setText(text))
+        .addTo(map);
+      eventMarkersRef.current.push(m);
+      bounds.extend([ev.lng, ev.lat]);
     }
     if (!bounds.isEmpty()) map.fitBounds(bounds, { padding: 60, maxZoom: 15, duration: 400 });
   }, []);
@@ -361,6 +392,37 @@ export default function ManagerHistoryPage() {
                 </>
               ) : (
                 <p className="text-center text-xs text-slate-500">{t("hist.noPath")}</p>
+              )}
+            </div>
+          )}
+
+          {/* Trip lifecycle — started / connection lost / restored / ended (+ how) */}
+          {selected && (selected.events?.length ?? 0) > 0 && (
+            <div className="rounded-xl border border-ink-800 bg-ink-900/50 p-3">
+              <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">{t("hist.lifecycle")}</h3>
+              <ul className="space-y-1.5">
+                {selected.events!.map((ev) => {
+                  const st = EVENT_MARKER[ev.type] ?? { color: "#64748b", glyph: "•" };
+                  return (
+                    <li key={ev.id} className="flex items-start gap-2 text-xs text-slate-300">
+                      <span
+                        className="mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[10px] font-bold text-white"
+                        style={{ background: st.color }}
+                      >
+                        {st.glyph}
+                      </span>
+                      <span className="min-w-0">
+                        <span className="text-slate-500">{fmtClockIso(ev.occurred_at)} · </span>
+                        {lang === "ar" && ev.detail_ar ? ev.detail_ar : ev.detail}
+                      </span>
+                    </li>
+                  );
+                })}
+              </ul>
+              {selected.end_reason && (
+                <p className="mt-2 text-[11px] text-slate-500">
+                  {t("hist.endReason")}: <span className="text-slate-300">{t(`hist.endReason.${selected.end_reason}`)}</span>
+                </p>
               )}
             </div>
           )}

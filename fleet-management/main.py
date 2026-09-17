@@ -89,6 +89,17 @@ app.include_router(logs.router, dependencies=[Depends(require_feature("logs"))])
 app.include_router(parent_reports.router, dependencies=[Depends(require_feature("reports"))])
 
 
+@app.on_event("startup")
+def _start_trip_lifecycle_sweeper() -> None:
+    """Background sweeper for trip-lifecycle log points: CONNECTION LOST when no
+    fix has arrived for > the org's grace, and the stale auto-close (TRIP ENDED
+    with an inferred reason) when a trip has had no signal at all for > the org's
+    limit. SHARED for both modules. Disable with LIFECYCLE_SWEEP=0."""
+    import trip_lifecycle
+
+    trip_lifecycle.start_sweeper()
+
+
 @app.get("/")
 def health_check():
     return {"status": "ok", "service": "routemind-fleet"}

@@ -32,6 +32,22 @@ EVENT_LABELS = {
     "short_stop": "Stop shorter than required",
     "long_stop": "Stopped too long away from a stop",
     "offline": "Went offline",
+    # trip-lifecycle log points (trip_lifecycle.py)
+    "trip_started": "Trip started",
+    "trip_ended": "Trip ended",
+    "connection_lost": "Connection lost",
+    "connection_restored": "Connection restored",
+}
+EVENT_LABELS_AR = {
+    "speeding": "تجاوز السرعة المحددة",
+    "off_route": "خرج عن المسار",
+    "short_stop": "توقف أقصر من المطلوب",
+    "long_stop": "توقف طويل بعيدًا عن المحطة",
+    "offline": "انقطع الإرسال",
+    "trip_started": "بدأت الرحلة",
+    "trip_ended": "انتهت الرحلة",
+    "connection_lost": "انقطع الاتصال",
+    "connection_restored": "عاد الاتصال",
 }
 
 
@@ -41,7 +57,13 @@ def _labelled(events: list) -> list:
         # detail prefix (see trips._insert_long_stop_alert) — label them right.
         if e.get("type") == "short_stop" and str(e.get("detail") or "").startswith("Long stop:"):
             e["type"] = "long_stop"
-        e["label"] = EVENT_LABELS.get(e.get("type"), (e.get("type") or "event").replace("_", " ").title())
+        t = e.get("type")
+        e["label"] = EVENT_LABELS.get(t, (t or "event").replace("_", " ").title())
+        e["label_ar"] = EVENT_LABELS_AR.get(t, e["label"])
+        # Lifecycle events carry ready-made bilingual messages in alerts.meta.
+        meta = e.get("meta") if isinstance(e.get("meta"), dict) else {}
+        e["detail_ar"] = meta.get("message_ar") or e.get("detail")
+        e["end_reason"] = meta.get("reason") if t == "trip_ended" else None
     return events
 
 

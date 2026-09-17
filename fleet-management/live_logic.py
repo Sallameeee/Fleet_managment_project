@@ -11,6 +11,7 @@ from datetime import datetime, time, timedelta, timezone
 from typing import Optional
 
 import gps_filter
+import trip_lifecycle as lifecycle
 from database import supabase
 
 ONLINE_WINDOW = timedelta(minutes=2)
@@ -52,16 +53,19 @@ def driver_live_positions(org_id: str) -> list:
     cutoff_online = now - ONLINE_WINDOW
     cutoff_recent = now - LAST_KNOWN_LOOKBACK
 
+    _cols = "id, driver_id, vehicle_id, route_id, started_at, ended_at"
+    if lifecycle.has_col("trips", "conn_lost_at"):  # trip-lifecycle signals (046)
+        _cols += ", conn_lost_at, last_battery, last_net_state, end_reason"
     active = (
         supabase.table("trips")
-        .select("id, driver_id, vehicle_id, route_id, started_at, ended_at")
+        .select(_cols)
         .eq("org_id", org_id)
         .eq("status", "active")
         .execute()
     ).data
     recent = (
         supabase.table("trips")
-        .select("id, driver_id, vehicle_id, route_id, started_at, ended_at")
+        .select(_cols)
         .eq("org_id", org_id)
         .gte("started_at", cutoff_recent.isoformat())
         .order("started_at", desc=True)
@@ -149,6 +153,11 @@ def driver_live_positions(org_id: str) -> list:
                 "online": online,
                 "on_trip": on_trip,
                 "last_ended_at": tr.get("ended_at") if not on_trip else None,
+                # Trip-lifecycle signals (migration 046; None before it).
+                "connection_lost_at": tr.get("conn_lost_at") if on_trip else None,
+                "last_battery": tr.get("last_battery") if on_trip else None,
+                "last_net_state": tr.get("last_net_state") if on_trip else None,
+                "end_reason": tr.get("end_reason") if not on_trip else None,
             }
         )
     out.sort(key=lambda d: (not d["online"], (d["name"] or "").lower()))

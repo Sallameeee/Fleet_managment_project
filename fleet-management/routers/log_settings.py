@@ -37,9 +37,11 @@ def _view(org_id: str, module: str) -> dict:
             {
                 "type": e["type"],
                 "label": e["label"],
+                "label_ar": e.get("label_ar"),
                 "unit": e["unit"],
                 "threshold_kind": e["threshold_kind"],
                 "help": e["help"],
+                "help_ar": e.get("help_ar"),
                 "min": e.get("min"),
                 "max": e.get("max"),
                 "enabled": v["enabled"],

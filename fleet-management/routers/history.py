@@ -21,6 +21,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from auth import require_permission
 from capacity_logic import org_module
 import gps_filter
+import trip_lifecycle as lifecycle
 from database import supabase
 
 router = APIRouter(prefix="/history", tags=["history"])
@@ -78,9 +79,12 @@ def get_history(
     end_utc = datetime.combine(d_to + timedelta(days=1), time.min, tzinfo=LOCAL_TZ).astimezone(timezone.utc)
 
     # --- 1. trips in range (+ optional subject filter) ---
+    _trip_cols = "id, driver_id, vehicle_id, route_id, status, started_at, ended_at"
+    if lifecycle.has_col("trips", "end_reason"):
+        _trip_cols += ", end_reason"
     q = (
         supabase.table("trips")
-        .select("id, driver_id, vehicle_id, route_id, status, started_at, ended_at")
+        .select(_trip_cols)
         .eq("org_id", org_id)
         .gte("started_at", start_utc.isoformat())
         .lt("started_at", end_utc.isoformat())
@@ -188,6 +192,24 @@ def get_history(
     except Exception:
         pass  # no stop_visits table / query failed → history still returns trips+pings
 
+    # --- 2c. trip-lifecycle log points (start / end / connection lost / restored)
+    # → map markers + the "how it ended" line. Tolerant of migration 045/046 absent.
+    events_by_trip = defaultdict(list)
+    try:
+        ev_rows = (
+            supabase.table("alerts").select("id, trip_id, type, lat, lng, detail, occurred_at" + (", meta" if lifecycle.has_col("alerts", "meta") else ""))
+            .in_("trip_id", trip_ids).in_("type", list(lifecycle.EVENT_TYPES)).order("occurred_at", desc=False).execute()
+        ).data
+        for e in ev_rows:
+            meta = e.get("meta") if isinstance(e.get("meta"), dict) else {}
+            events_by_trip[e["trip_id"]].append(
+                {"id": e["id"], "type": e["type"], "lat": e.get("lat"), "lng": e.get("lng"), "occurred_at": e.get("occurred_at"),
+                 "detail": e.get("detail"), "detail_ar": meta.get("message_ar"), "reason": meta.get("reason"),
+                 "gap_min": meta.get("gap_min"), "buffered": meta.get("buffered"), "place": meta.get("place")}
+            )
+    except Exception:
+        pass  # enum/columns not migrated yet → no lifecycle markers
+
     is_school = org_module(org_id) == "school"
     out = []
     for t in trips:
@@ -209,6 +231,8 @@ def get_history(
                 "ended_at": t.get("ended_at"),
                 "pings": pings_by_trip.get(t["id"], []),
                 "stop_visits": visits,
+                "events": events_by_trip.get(t["id"], []),
+                "end_reason": t.get("end_reason"),
                 # School trip log: pickup / school-arrival / home-arrival, derived.
                 "school_log": _derive_school_log(t, visits) if is_school else None,
             }

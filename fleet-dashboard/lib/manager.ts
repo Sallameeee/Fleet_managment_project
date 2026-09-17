@@ -391,6 +391,7 @@ export interface AlertFeedItem {
   id: string;
   type: string;
   detail: string | null;
+  detail_ar?: string | null; // Arabic message for trip-lifecycle log points
   occurred_at: string | null;
   is_read: boolean;
   driver_name: string | null;
@@ -566,6 +567,7 @@ export interface ManagerAlert {
   id: string;
   type: string;
   detail: string | null;
+  detail_ar?: string | null; // Arabic message for trip-lifecycle log points
   lat: number | null;
   lng: number | null;
   occurred_at: string | null;
@@ -882,6 +884,11 @@ export interface DriverPosition {
   online: boolean;
   on_trip: boolean;
   last_ended_at: string | null;
+  // Trip-lifecycle signals (migration 046; null before it)
+  connection_lost_at?: string | null;
+  last_battery?: number | null;
+  last_net_state?: string | null;
+  end_reason?: string | null;
 }
 
 export async function getDriverPositions(): Promise<DriverPosition[]> {
@@ -1353,9 +1360,15 @@ export async function resolveParentReport(id: string): Promise<void> {
 
 export interface LogEvent {
   id: string;
-  type: string; // speeding | off_route | short_stop | offline
+  type: string; // speeding | off_route | short_stop | offline | long_stop | trip_started | trip_ended | connection_lost | connection_restored
   label: string; // human label, e.g. "Exceeded speed limit"
+  label_ar?: string | null; // Arabic label (backend)
   detail: string | null; // specifics, e.g. "Speed 78 km/h exceeded limit 60 km/h"
+  detail_ar?: string | null; // Arabic message for trip-lifecycle log points (alerts.meta)
+  end_reason?: string | null; // trip_ended only: normal | cancelled | app_closed | network_lost_resumed | device_power | uncertain
+  meta?: Record<string, unknown> | null;
+  lat?: number | null;
+  lng?: number | null;
   occurred_at: string | null;
   driver_id: string | null;
   driver_name: string | null;
@@ -1436,6 +1449,21 @@ export interface HistoryPing {
   recorded_at: string;
 }
 
+/** A trip-lifecycle LOG POINT (start / end / connection lost / restored). */
+export interface HistoryEvent {
+  id: string;
+  type: "trip_started" | "trip_ended" | "connection_lost" | "connection_restored" | string;
+  lat: number | null;
+  lng: number | null;
+  occurred_at: string | null;
+  detail: string | null;
+  detail_ar: string | null;
+  reason: string | null;
+  gap_min: number | null;
+  buffered: number | null;
+  place: string | null;
+}
+
 export interface HistoryStopVisit {
   stop_id: string | null;
   stop_name: string | null;
@@ -1462,6 +1490,8 @@ export interface HistoryTrip {
   ended_at: string | null;
   pings: HistoryPing[];
   stop_visits: HistoryStopVisit[];
+  events?: HistoryEvent[]; // trip-lifecycle log points → map markers
+  end_reason?: string | null;
   // School trip log: pickup / school-arrival / home-arrival, derived server-side.
   school_log?: {
     session: "morning" | "afternoon";
@@ -1584,6 +1614,8 @@ export async function setTrackingHours(
 export interface LogSettingEvent {
   type: string;
   label: string;
+  label_ar?: string | null;
+  help_ar?: string | null;
   unit: string | null;
   threshold_kind: "limit" | "distance" | "duration" | null;
   help: string;

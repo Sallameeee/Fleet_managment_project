@@ -34,7 +34,7 @@ const THRESHOLD_LABEL: Record<string, string> = {
 };
 
 export default function ManagerAlertsPage() {
-  const { t } = useT();
+  const { t, lang } = useT();
   const [tab, setTab] = useState<"alerts" | "rules">("alerts");
 
   return (
@@ -68,7 +68,7 @@ export default function ManagerAlertsPage() {
 }
 
 function Feed() {
-  const { t } = useT();
+  const { t, lang } = useT();
   const toast = useToast();
   const [alerts, setAlerts] = useState<ManagerAlert[]>([]);
   const [fType, setFType] = useState("");
@@ -164,8 +164,8 @@ function Feed() {
             {!loading && alerts.length === 0 && <tr><td colSpan={6} className="px-4 py-6 text-center text-slate-500">{t("alerts.noAlerts")}</td></tr>}
             {alerts.map((a) => (
               <tr key={a.id} className={a.is_read ? "" : "bg-amber-500/5"}>
-                <td className="px-4 py-3"><span className="inline-flex rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-xs capitalize text-amber-300">{a.type.replace("_", " ")}</span></td>
-                <td className="px-4 py-3 text-slate-300">{a.detail}</td>
+                <td className="px-4 py-3"><span className="inline-flex rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-xs capitalize text-amber-300">{t(`alertType.${a.type}`) === `alertType.${a.type}` ? a.type.replace("_", " ") : t(`alertType.${a.type}`)}</span></td>
+                <td className="px-4 py-3 text-slate-300">{lang === "ar" && a.detail_ar ? a.detail_ar : a.detail}</td>
                 <td className="px-4 py-3 text-slate-400">{a.driver_name ?? "—"}</td>
                 <td className="px-4 py-3 text-slate-400">{a.vehicle_bus_number ?? "—"}</td>
                 <td className="px-4 py-3 text-xs text-slate-500">{a.occurred_at ? a.occurred_at.replace("T", " ").slice(0, 16) : "—"}</td>

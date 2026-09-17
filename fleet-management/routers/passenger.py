@@ -9,11 +9,13 @@ nothing; the server derives everything from the authenticated identity. So a
 passenger can never read another route's drivers or any management data.
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from auth import require_role
+import trip_lifecycle as lifecycle
 from capacity_logic import earliest_request_date, read_cutoff, require_school_org, require_university_org
 import gps_filter
 from database import supabase
@@ -249,7 +251,38 @@ def _build_track(org_id: str, subject: dict, effective_route_id, effective_stop,
     if entry:
         result["position"] = entry.get("position")
         result["online"] = entry.get("online", False)
+    result["trip"] = _trip_events_today(org_id, effective_route_id, supervisor_driver_id)
     return result
+
+
+def _trip_events_today(org_id: str, route_id, driver_id) -> Optional[dict]:
+    """Today's trip on this route (the supervisor's if known, else the newest on
+    the route) with its trip-lifecycle log points — so the parent / student app
+    can show "trip started 7:00", "connection lost 6 min then restored", and
+    how it ended. SHARED for both passenger flavours. Never raises."""
+    try:
+        start = datetime.combine(datetime.now(LOCAL_TZ).date(), time.min, tzinfo=LOCAL_TZ).astimezone(timezone.utc)
+        cols = "id, status, started_at, ended_at" + (", end_reason" if lifecycle.has_col("trips", "end_reason") else "")
+        q = supabase.table("trips").select(cols).eq("org_id", org_id).eq("route_id", route_id).gte("started_at", start.isoformat())
+        if driver_id:
+            q = q.eq("driver_id", driver_id)
+        rows = q.order("started_at", desc=True).limit(1).execute().data
+        if not rows:
+            return None
+        t = rows[0]
+        evs = (
+            supabase.table("alerts").select("type, lat, lng, detail, occurred_at" + (", meta" if lifecycle.has_col("alerts", "meta") else ""))
+            .eq("trip_id", t["id"]).in_("type", list(lifecycle.EVENT_TYPES)).order("occurred_at", desc=False).execute().data
+        )
+        events = []
+        for e in evs:
+            meta = e.get("meta") if isinstance(e.get("meta"), dict) else {}
+            events.append({"type": e["type"], "lat": e.get("lat"), "lng": e.get("lng"), "occurred_at": e.get("occurred_at"),
+                           "detail": e.get("detail"), "detail_ar": meta.get("message_ar"), "reason": meta.get("reason"), "gap_min": meta.get("gap_min")})
+        return {"id": t["id"], "status": t.get("status"), "started_at": t.get("started_at"), "ended_at": t.get("ended_at"),
+                "end_reason": t.get("end_reason"), "events": events}
+    except Exception:
+        return None
 
 
 @router.get("/children/{student_id}/track")

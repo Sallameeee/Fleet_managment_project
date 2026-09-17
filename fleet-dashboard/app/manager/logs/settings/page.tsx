@@ -16,7 +16,7 @@ import Button from "@/components/Button";
  * every ping batch, for school and university alike.
  */
 export default function EditLogsPage() {
-  const { t } = useT();
+  const { t, lang } = useT();
   const isSchool = useIsSchool();
   const toast = useToast();
   const [data, setData] = useState<LogSettings | null>(null);
@@ -114,7 +114,7 @@ export default function EditLogsPage() {
                   return (
                     <tr key={e.type} className={v.enabled ? "" : "opacity-60"}>
                       <td className="px-4 py-3 align-top">
-                        <div className="font-medium text-white">{e.label}</div>
+                        <div className="font-medium text-white">{lang === "ar" && e.label_ar ? e.label_ar : e.label}</div>
                         <div className="text-xs text-slate-500">{e.help}</div>
                       </td>
                       <td className="px-4 py-3 align-top">

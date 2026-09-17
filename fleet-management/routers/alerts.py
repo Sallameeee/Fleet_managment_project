@@ -148,6 +148,10 @@ def _enrich_alerts(alerts: list) -> list:
                 "trip_id": a.get("trip_id"),
                 "route_name": routes.get(trip.get("route_id")),
                 "vehicle_bus_number": vehicles.get(trip.get("vehicle_id")),
+                # Trip-lifecycle log points store their bilingual messages + params
+                # here (migration 046); absent for legacy rows / pre-migration.
+                "meta": a.get("meta") if isinstance(a.get("meta"), dict) else None,
+                "detail_ar": (a.get("meta") or {}).get("message_ar") if isinstance(a.get("meta"), dict) else None,
             }
         )
     return out

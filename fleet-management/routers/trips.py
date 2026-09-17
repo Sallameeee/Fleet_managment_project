@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 import features as feature_flags
 import gps_filter
 import notifications_logic as notify
+import trip_lifecycle as lifecycle
 from log_settings_logic import effective_log_settings
 from auth import require_permission, require_role
 from capacity_logic import effective_roster, org_module
@@ -142,6 +143,28 @@ class PingIn(BaseModel):
     heading: Optional[float] = None
     # Device timestamp. Defaults to server now() at insert time if missing.
     recorded_at: Optional[datetime] = None
+    # Phone state at the moment of the fix (optional, migration 046): battery %
+    # and the app's own view of its network (online | weak | offline). Feeds the
+    # trip-lifecycle end-reason inference (trip_lifecycle.py).
+    battery: Optional[int] = Field(None, ge=0, le=100)
+    net_state: Optional[str] = Field(None, max_length=16)
+
+
+class HeartbeatIn(BaseModel):
+    """One "app alive" beacon — SEPARATE from GPS so the server can tell "GPS
+    weak but app+net alive" from "app/net gone". Batched like pings."""
+    sent_at: datetime
+    battery: Optional[int] = Field(None, ge=0, le=100)
+    net_state: Optional[str] = Field(None, max_length=16)
+
+
+class AppStateIn(BaseModel):
+    """Best-effort Flutter lifecycle beacon: detached (closed / swiped away),
+    paused (backgrounded), resumed."""
+    state: str = Field(..., pattern="^(detached|paused|resumed)$")
+    at: Optional[datetime] = None
+    battery: Optional[int] = Field(None, ge=0, le=100)
+    net_state: Optional[str] = Field(None, max_length=16)
 
 
 # A device clock that runs AHEAD of real time produces fixes "from the future".
@@ -508,6 +531,8 @@ def start_trip(
     # School only, best-effort: tell each parent whose child is on this bus today
     # that "<child>'s bus has started" (deduped per trip+parent).
     notify.trip_started(trip)
+    # Trip-lifecycle log point (shared): TRIP STARTED — marker patched in by the first accepted fix.
+    lifecycle.on_trip_started(trip)
     return _enrich(
         trip,
         driver_name=current_user.get("name"),
@@ -575,6 +600,8 @@ def end_trip(
 
     # School only, best-effort: compute + persist this trip's performance metrics.
     _compute_trip_performance(upd.data[0])
+    # Trip-lifecycle log point (shared): TRIP ENDED — normally, by the driver.
+    lifecycle.on_trip_ended(upd.data[0], "normal", at=gps_filter.parse_dt(upd.data[0].get("ended_at")))
     return _enrich_one(upd.data[0])
 
 
@@ -680,7 +707,11 @@ def cancel_active_trips(org_id: str, *, assignment_id: Optional[str] = None,
             q = q.eq("driver_id", driver_id)
         if assignment_id is None and trip_id is None and driver_id is None:
             return []  # never cancel an org's every trip by accident
-        return q.execute().data or []
+        rows = q.execute().data or []
+        reason = "driver_deactivated" if driver_id is not None else "cancelled"
+        for row in rows:  # log point: TRIP ENDED (cancelled / driver deactivated) — never blocks the caller
+            lifecycle.on_trip_ended(row, reason, at=gps_filter.parse_dt(row.get("ended_at")))
+        return rows
     except Exception:
         return []
 
@@ -907,20 +938,55 @@ def post_pings(
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
         norm.append({"lat": p.lat, "lng": p.lng, "speed": p.speed, "heading": p.heading,
+                     "battery": p.battery, "net_state": p.net_state,
                      "recorded_dt": dt, "recorded_at": dt.isoformat()})
     norm.sort(key=lambda n: n["recorded_dt"])
     min_ts, max_ts = norm[0]["recorded_dt"], norm[-1]["recorded_dt"]
+    # Phone state travels with the newest fix of the batch.
+    phone_battery = next((n["battery"] for n in reversed(norm) if n.get("battery") is not None), None)
+    phone_net = next((n["net_state"] for n in reversed(norm) if n.get("net_state")), None)
 
     # A COMPLETED trip only takes the backlog that was recorded while it ran
     # (see COMPLETED_TRIP_GRACE). Later fixes mean the phone is still tracking
     # a trip that ended elsewhere — 403, so the app resets itself as before.
+    # EXCEPTION (trip lifecycle): a trip the SWEEPER auto-closed for silence
+    # (end_reason app_closed / device_power / uncertain) whose phone comes back
+    # with NEWER fixes was never over — it was a network outage. Reopen it and
+    # keep tracking; the connection_restored log point explains the gap.
+    reopened = False
     if trip["status"] == "completed":
         ended = gps_filter.parse_dt(trip.get("ended_at")) if trip.get("ended_at") else server_now
+        sig = lifecycle.load_signals(trip_id)
+        inferred = sig.get("end_reason") in lifecycle.INFERRED_REASONS
         if max_ts > ended + COMPLETED_TRIP_GRACE:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="This trip is 'completed', not active. Only active trips accept pings.",
-            )
+            if inferred:
+                try:
+                    back = (
+                        supabase.table("trips").update({"status": "active", "ended_at": None})
+                        .eq("id", trip_id).eq("status", "completed").execute()
+                    ).data
+                except Exception:
+                    back = []  # e.g. 044: the driver already runs another trip
+                if back:
+                    reopened = True
+                    trip["status"] = "active"
+                    lifecycle.update_trip(trip_id, {"end_reason": None, "conn_lost_at": ended.isoformat(),
+                                                    "end_detail": {**(sig.get("end_detail") or {}), "reopened_at": server_now.isoformat(),
+                                                                   "revised_from": sig.get("end_reason")}})
+                    ev = lifecycle._find_event(trip_id, "trip_ended")
+                    if ev:  # that end never happened
+                        try:
+                            supabase.table("alerts").delete().eq("id", ev["id"]).execute()
+                        except Exception:
+                            pass
+            if not reopened:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="This trip is 'completed', not active. Only active trips accept pings.",
+                )
+        elif inferred:
+            # Late backlog inside the grace window: the silence was the network.
+            lifecycle.on_signal_after_close(trip, kind="backlog", at=server_now)
 
     # 0. Clock sanity: fixes from the future are tagged, never trusted.
     future_cut = server_now + FUTURE_SKEW_TOLERANCE
@@ -962,6 +1028,9 @@ def post_pings(
             "lat": n["lat"], "lng": n["lng"], "speed": n["speed"], "heading": n["heading"],
             "recorded_at": n["recorded_dt"].isoformat(),
         }
+        if _ping_state_cols():
+            row["battery"] = n.get("battery")
+            row["net_state"] = n.get("net_state")
         if tag:
             row["is_outlier"] = bool(n.get("reject_reason"))
             row["reject_reason"] = n.get("reject_reason")
@@ -977,6 +1046,17 @@ def post_pings(
     # gaps, speeding, off_route, long_stop. Best-effort (never fails capture). ---
     detection = _process_pings(trip, accepted, anchor=anchor) if accepted else {"skipped": "no new accepted fixes"}
 
+    # Trip lifecycle (shared): close an open connection-loss episode (CONNECTION
+    # RESTORED), give TRIP STARTED its marker on the first fix, record the
+    # phone's state (last signal / battery / net) for the end-reason inference.
+    restored = lifecycle.on_pings_arrived(
+        trip, accepted, now=server_now, battery=phone_battery, net_state=phone_net,
+        first_fix=(anchor is None and trip["status"] == "active"),
+    )
+    if restored or reopened:
+        detection = {**(detection if isinstance(detection, dict) else {}),
+                     "connection_restored": bool(restored), "trip_reopened": reopened}
+
     return {
         "recorded": stored,
         "accepted": len(accepted),
@@ -985,6 +1065,60 @@ def post_pings(
         "trip_id": trip_id,
         "detection": detection,
     }
+
+
+def _ping_state_cols() -> bool:
+    """location_pings.battery / net_state exist (migration 046)?"""
+    return lifecycle.has_col("location_pings", "battery")
+
+
+@router.post("/{trip_id}/heartbeat", status_code=status.HTTP_200_OK)
+def post_heartbeat(
+    trip_id: str,
+    body: Union[HeartbeatIn, List[HeartbeatIn]],
+    current_user: dict = Depends(require_role("driver")),
+):
+    """Tiny periodic "app alive" beacon from the tracking service (batched when
+    offline). Stored in trip_heartbeats (046) and folded into trips.last_* so
+    the sweeper can tell "GPS weak but app+net alive" from "gone". Answers 200
+    with the trip status for ANY non-cancelled trip so a phone that outlived an
+    auto-close learns it and resets (and the end reason is revised to network)."""
+    trip = _load_own_trip_for_pings(trip_id, current_user)
+    beats = body if isinstance(body, list) else [body]
+    now = datetime.now(timezone.utc)
+    norm = []
+    for b in beats:
+        dt = b.sent_at if b.sent_at.tzinfo else b.sent_at.replace(tzinfo=timezone.utc)
+        if dt > now + FUTURE_SKEW_TOLERANCE:
+            dt = now
+        norm.append({"sent_at": dt, "battery": b.battery, "net_state": b.net_state})
+    norm.sort(key=lambda n: n["sent_at"])
+    stored = 0
+    if trip["status"] == "active":
+        stored = lifecycle.store_heartbeats(trip, norm)
+        last = norm[-1] if norm else {}
+        lifecycle.record_signal(trip_id, at=now, battery=last.get("battery"), net_state=last.get("net_state"), heartbeat=True)
+    else:
+        lifecycle.on_signal_after_close(trip, kind="heartbeat", at=now)
+    return {"trip_id": trip_id, "status": trip["status"], "stored": stored}
+
+
+@router.post("/{trip_id}/app-state", status_code=status.HTTP_200_OK)
+def post_app_state(
+    trip_id: str,
+    body: AppStateIn,
+    current_user: dict = Depends(require_role("driver")),
+):
+    """Best-effort Flutter lifecycle beacon (detached = closed/swiped away,
+    paused = backgrounded, resumed). `detached` with no signal after it is the
+    "Driver closed the app" evidence for the end-reason inference."""
+    trip = _load_own_trip_for_pings(trip_id, current_user)
+    now = datetime.now(timezone.utc)
+    if trip["status"] == "active":
+        lifecycle.record_signal(trip_id, at=now, battery=body.battery, net_state=body.net_state, app_state=body.state)
+    else:
+        lifecycle.on_signal_after_close(trip, kind="app_state", at=now)
+    return {"trip_id": trip_id, "status": trip["status"], "state": body.state}
 
 
 def _last_accepted_before(trip_id: str, ts: datetime) -> Optional[dict]:

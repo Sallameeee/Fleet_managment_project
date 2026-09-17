@@ -14,7 +14,7 @@ function Card({ label, value, accent }: { label: string; value: number; accent?:
 }
 
 export default function ManagerDashboardPage() {
-  const { t } = useT();
+  const { t, lang } = useT();
   const [data, setData] = useState<DashboardSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -93,9 +93,9 @@ export default function ManagerDashboardPage() {
                 <li key={a.id} className="flex items-start justify-between gap-3 py-2.5 text-sm">
                   <div>
                     <span className="mr-2 inline-flex rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-xs capitalize text-amber-300">
-                      {a.type.replace("_", " ")}
+                      {t(`alertType.${a.type}`) === `alertType.${a.type}` ? a.type.replace("_", " ") : t(`alertType.${a.type}`)}
                     </span>
-                    <span className="text-slate-300">{a.detail}</span>
+                    <span className="text-slate-300">{lang === "ar" && a.detail_ar ? a.detail_ar : a.detail}</span>
                     {a.driver_name && <span className="text-slate-500"> · {a.driver_name}</span>}
                   </div>
                   <span className="shrink-0 text-xs text-slate-500">

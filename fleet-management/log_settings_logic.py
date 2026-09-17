@@ -48,6 +48,27 @@ LOG_EVENT_CATALOG: list[dict] = [
      "default_enabled": True, "default_threshold": 5, "min": 1, "max": 120,
      "modules": ["school", "university"],
      "help": "Logged when no GPS data arrives for longer than this during an active trip."},
+    # ── Trip lifecycle log points (trip_lifecycle.py; migration 045) ──
+    {"type": "trip_started", "label": "Trip started", "label_ar": "بدء الرحلة", "unit": None, "threshold_kind": None,
+     "default_enabled": True, "default_threshold": None,
+     "modules": ["school", "university"],
+     "help": "Logged when a trip starts; the marker is the first accepted GPS fix.",
+     "help_ar": "يُسجَّل عند بدء الرحلة؛ العلامة على الخريطة هي أول موقع مقبول."},
+    {"type": "connection_lost", "label": "Connection lost", "label_ar": "انقطاع الاتصال", "unit": "seconds", "threshold_kind": "duration",
+     "default_enabled": True, "default_threshold": 90, "min": 30, "max": 900,
+     "modules": ["school", "university"],
+     "help": "Logged when no GPS fix has ARRIVED from the phone for longer than this during an active trip (marker = last known fix).",
+     "help_ar": "يُسجَّل عندما لا يصل أي موقع من الهاتف لأطول من هذه المدة أثناء رحلة نشطة (العلامة = آخر موقع معروف)."},
+    {"type": "connection_restored", "label": "Connection restored", "label_ar": "عودة الاتصال", "unit": None, "threshold_kind": None,
+     "default_enabled": True, "default_threshold": None,
+     "modules": ["school", "university"],
+     "help": "Logged when fixes resume after a connection loss, with the gap and how many buffered fixes came back with their original timestamps.",
+     "help_ar": "يُسجَّل عند عودة المواقع بعد انقطاع، مع مدة الانقطاع وعدد النقاط المخزّنة التي رُفعت بتوقيتها الأصلي."},
+    {"type": "trip_ended", "label": "Trip ended (with reason)", "label_ar": "انتهاء الرحلة (مع السبب)", "unit": "minutes", "threshold_kind": "duration",
+     "default_enabled": True, "default_threshold": 30, "min": 5, "max": 240,
+     "modules": ["school", "university"],
+     "help": "Logged when a trip ends and HOW (End Trip, cancelled, app closed, network lost, device off, uncertain). The limit is how long a trip may stay silent (no fix, no heartbeat) before it is closed automatically.",
+     "help_ar": "يُسجَّل عند انتهاء الرحلة وكيف انتهت (إنهاء من السائق، إلغاء، إغلاق التطبيق، انقطاع الشبكة، انطفاء الجهاز، غير مؤكد). الحد هو أقصى مدة صمت (لا موقع ولا نبضة) قبل إغلاق الرحلة تلقائيًا."},
 ]
 
 CATALOG_BY_TYPE = {e["type"]: e for e in LOG_EVENT_CATALOG}
