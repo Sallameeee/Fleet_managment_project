@@ -115,19 +115,26 @@ def get_history(
     pings_by_trip = defaultdict(list)
     PAGE = 1000
     offset = 0
+    cols = "trip_id, lat, lng, recorded_at, is_outlier"  # honour ingest tags (041); falls back below
     while True:
-        chunk = (
-            supabase.table("location_pings")
-            .select("trip_id, lat, lng, recorded_at")
-            .in_("trip_id", trip_ids)
-            .order("trip_id", desc=False)
-            .order("recorded_at", desc=False)
-            .range(offset, offset + PAGE - 1)
-            .execute()
-        ).data
+        try:
+            chunk = (
+                supabase.table("location_pings")
+                .select(cols)
+                .in_("trip_id", trip_ids)
+                .order("trip_id", desc=False)
+                .order("recorded_at", desc=False)
+                .range(offset, offset + PAGE - 1)
+                .execute()
+            ).data
+        except Exception as exc:
+            if "is_outlier" in str(exc) and "is_outlier" in cols:
+                cols = "trip_id, lat, lng, recorded_at"  # migration 041 not applied
+                continue
+            raise
         for p in chunk:
             pings_by_trip[p["trip_id"]].append(
-                {"lat": p["lat"], "lng": p["lng"], "recorded_at": p["recorded_at"]}
+                {"lat": p["lat"], "lng": p["lng"], "recorded_at": p["recorded_at"], "is_outlier": p.get("is_outlier")}
             )
         if len(chunk) < PAGE:
             break
