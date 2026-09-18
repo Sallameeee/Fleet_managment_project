@@ -22,6 +22,7 @@ import features as feature_flags
 import gps_filter
 import notifications_logic as notify
 import trip_lifecycle as lifecycle
+from alert_text import alert_meta
 from log_settings_logic import effective_log_settings
 from auth import require_permission, require_role
 from capacity_logic import effective_roster, org_module
@@ -1616,11 +1617,19 @@ def _org_wide_rules(rules: list, settings: dict, type_: str) -> list:
     return org_wide + targeted
 
 
+def _alert_row(trip: dict, type_: str, lat, lng, detail: str, occurred_dt) -> dict:
+    """One alerts row. The Arabic message rides in `meta` (046) — same bilingual
+    mechanism as the trip-lifecycle log points; skipped before that migration."""
+    row = {"org_id": trip["org_id"], "trip_id": trip["id"], "driver_id": trip["driver_id"],
+           "type": type_, "lat": lat, "lng": lng, "detail": detail, "occurred_at": occurred_dt.isoformat()}
+    meta = alert_meta(type_, detail)
+    if meta and lifecycle.has_col("alerts", "meta"):
+        row["meta"] = meta
+    return row
+
+
 def _insert_alert(trip: dict, type_: str, lat, lng, detail: str, occurred_dt) -> None:
-    supabase.table("alerts").insert(
-        {"org_id": trip["org_id"], "trip_id": trip["id"], "driver_id": trip["driver_id"],
-         "type": type_, "lat": lat, "lng": lng, "detail": detail, "occurred_at": occurred_dt.isoformat()}
-    ).execute()
+    supabase.table("alerts").insert(_alert_row(trip, type_, lat, lng, detail, occurred_dt)).execute()
 
 
 def _existing_alert_times(trip_id: str, type_: str, since, until, detail_prefix: str = "") -> set:
@@ -1929,18 +1938,7 @@ def _emit_alert(trip, type_, lat, lng, detail, occurred_dt, seen, summary, count
     key = (type_, occurred_dt, detail)
     if key in seen:
         return
-    supabase.table("alerts").insert(
-        {
-            "org_id": trip["org_id"],
-            "trip_id": trip["id"],
-            "driver_id": trip["driver_id"],
-            "type": type_,
-            "lat": lat,
-            "lng": lng,
-            "detail": detail,
-            "occurred_at": occurred_dt.isoformat(),
-        }
-    ).execute()
+    supabase.table("alerts").insert(_alert_row(trip, type_, lat, lng, detail, occurred_dt)).execute()
     seen.add(key)
     summary[counter] += 1
 

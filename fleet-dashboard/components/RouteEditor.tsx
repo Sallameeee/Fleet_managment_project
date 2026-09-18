@@ -666,13 +666,14 @@ export default function RouteEditor({
       <div className="flex min-h-0 flex-1 flex-col md:flex-row">
         {/* Map (kept LTR so it never mirrors under Arabic/RTL). On phones it takes
             the top ~42% of the screen and the stop panel scrolls underneath. */}
-        <div dir="ltr" className="relative h-[42dvh] min-w-0 shrink-0 md:h-auto md:flex-1">
-          <MapView className="h-full w-full" styleSwitcher onReady={handleMapReady} onStyleChange={handleStyleChange} />
-
-          {/* left-14 clears the style-switcher button that sits at top-left */}
-          <div className="pointer-events-none absolute left-14 top-3 z-10 max-w-sm rounded-lg bg-ink-900/80 px-3 py-1.5 text-xs text-slate-300 backdrop-blur">
+        <div className="flex h-[42dvh] min-w-0 shrink-0 flex-col md:h-auto md:flex-1">
+          {/* Hint as a slim bar ABOVE the map: it used to float over the map and
+              covered the zoom +/- control (and most of the map on phones). */}
+          <div className="shrink-0 border-b border-ink-800 bg-ink-900/80 px-3 py-1.5 text-[11px] leading-snug text-slate-300 sm:text-xs">
             {topHint}
           </div>
+          <div dir="ltr" className="relative min-h-0 flex-1">
+          <MapView className="h-full w-full" styleSwitcher onReady={handleMapReady} onStyleChange={handleStyleChange} />
 
           {/* Marker context menu */}
           {menu && menuPos && (
@@ -716,6 +717,7 @@ export default function RouteEditor({
               +
             </button>
           )}
+          </div>
         </div>
 
         {/* Side panel */}

@@ -25,6 +25,7 @@ import Button from "@/components/Button";
 import Input from "@/components/Input";
 import Modal from "@/components/Modal";
 import RouteEditor from "@/components/RouteEditor";
+import SelectField from "@/components/SelectField";
 
 const emptyForm = { driver_id: "", route_id: "", vehicle_id: "", trip_date: "", shift_label: "", start_time: "", end_time: "", bus_driver_id: "" };
 
@@ -75,15 +76,18 @@ export default function ManagerAssignmentsPage() {
   }, [load]);
 
   async function loadOptions() {
-    try {
-      const [d, r, v] = await Promise.all([listDrivers(), listRoutes(), listVehicles()]);
-      setDrivers(d);
-      setRoutes(r);
-      setVehicles(v);
-      if (isSchool) setBusDrivers(await listBusDrivers()); // school-only bus driver options
-    } catch {
-      /* the selects just stay empty */
-    }
+    // Each list is independent: one failed request must not blank the others
+    // (seen live: a single transient failure left every select empty).
+    const [d, r, v, b] = await Promise.allSettled([
+      listDrivers(),
+      listRoutes(),
+      listVehicles(),
+      isSchool ? listBusDrivers() : Promise.resolve([] as BusDriver[]), // school-only bus driver options
+    ]);
+    if (d.status === "fulfilled") setDrivers(d.value);
+    if (r.status === "fulfilled") setRoutes(r.value);
+    if (v.status === "fulfilled") setVehicles(v.value);
+    if (b.status === "fulfilled") setBusDrivers(b.value);
   }
 
   async function openCreate() {
@@ -253,8 +257,8 @@ export default function ManagerAssignmentsPage() {
 
       <Modal open={open} onClose={() => setOpen(false)} title={editingId ? t("assign.editAssignment") : t("assign.newAssignment")}>
         <form onSubmit={handleSubmit} className="space-y-3">
-          <Select label={`${isSchool ? t("common.supervisor") : t("common.driver")} *`} value={form.driver_id} onChange={(v) => setForm((f) => ({ ...f, driver_id: v }))} options={drivers.map((d) => ({ value: d.id, label: `${d.name} (${d.username})` }))} placeholder={t("assign.select")} />
-          <Select
+          <SelectField label={`${isSchool ? t("common.supervisor") : t("common.driver")} *`} value={form.driver_id} onChange={(v) => setForm((f) => ({ ...f, driver_id: v }))} options={drivers.map((d) => ({ value: d.id, label: `${d.name} (${d.username})` }))} placeholder={t("assign.select")} />
+          <SelectField
             label={`${t("common.route")} *`}
             value={form.route_id}
             onChange={(v) => setForm((f) => ({ ...f, route_id: v }))}
@@ -271,7 +275,7 @@ export default function ManagerAssignmentsPage() {
               </button>
             }
           />
-          <Select label={`${t("common.vehicle")} *`} value={form.vehicle_id} onChange={(v) => setForm((f) => ({ ...f, vehicle_id: v }))} options={vehicles.map((v) => ({ value: v.id, label: v.bus_number }))} placeholder={t("assign.select")} />
+          <SelectField label={`${t("common.vehicle")} *`} value={form.vehicle_id} onChange={(v) => setForm((f) => ({ ...f, vehicle_id: v }))} options={vehicles.map((v) => ({ value: v.id, label: v.bus_number }))} placeholder={t("assign.select")} />
           <Input label={`${t("assign.tripDate")} *`} type="date" value={form.trip_date} onChange={(e) => setForm((f) => ({ ...f, trip_date: e.target.value }))} required />
           <div className="grid grid-cols-2 gap-3">
             <Input label={`${t("assign.startTime")} *`} type="time" value={form.start_time} onChange={(e) => setForm((f) => ({ ...f, start_time: e.target.value }))} required />
@@ -279,7 +283,7 @@ export default function ManagerAssignmentsPage() {
           </div>
           <Input label={t("assign.shiftLabel")} value={form.shift_label} onChange={(e) => setForm((f) => ({ ...f, shift_label: e.target.value }))} />
           {isSchool && (
-            <Select
+            <SelectField
               label={t("assign.busDriver")}
               value={form.bus_driver_id}
               onChange={(v) => setForm((f) => ({ ...f, bus_driver_id: v }))}
@@ -309,41 +313,5 @@ export default function ManagerAssignmentsPage() {
         />
       )}
     </div>
-  );
-}
-
-function Select({
-  label,
-  value,
-  onChange,
-  options,
-  placeholder,
-  action,
-}: {
-  label: string;
-  value: string;
-  onChange: (v: string) => void;
-  options: { value: string; label: string }[];
-  placeholder?: string;
-  /** Optional control rendered at the end of the label row (e.g. "+ Add"). */
-  action?: React.ReactNode;
-}) {
-  return (
-    <label className="block">
-      <span className="mb-1.5 flex items-center justify-between gap-2 text-sm font-medium text-slate-300">
-        <span>{label}</span>
-        {action}
-      </span>
-      <select
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        className="w-full rounded-lg border border-ink-700 bg-ink-850 px-3 py-2.5 text-slate-100 focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/40"
-      >
-        <option value="">{placeholder ?? "Select…"}</option>
-        {options.map((o) => (
-          <option key={o.value} value={o.value}>{o.label}</option>
-        ))}
-      </select>
-    </label>
   );
 }

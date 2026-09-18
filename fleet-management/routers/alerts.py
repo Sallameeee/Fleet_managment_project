@@ -11,6 +11,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 
+from alert_text import alert_message_ar
 from auth import require_permission
 from database import supabase
 
@@ -151,7 +152,8 @@ def _enrich_alerts(alerts: list) -> list:
                 # Trip-lifecycle log points store their bilingual messages + params
                 # here (migration 046); absent for legacy rows / pre-migration.
                 "meta": a.get("meta") if isinstance(a.get("meta"), dict) else None,
-                "detail_ar": (a.get("meta") or {}).get("message_ar") if isinstance(a.get("meta"), dict) else None,
+                "detail_ar": ((a.get("meta") or {}).get("message_ar") if isinstance(a.get("meta"), dict) else None)
+                or alert_message_ar(a.get("type"), a.get("detail")),
             }
         )
     return out

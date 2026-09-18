@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { getDashboardSummary, type DashboardSummary } from "@/lib/manager";
 import { useT } from "@/lib/i18n";
+import { alertText } from "@/lib/alertText";
 
 function Card({ label, value, accent }: { label: string; value: number; accent?: string }) {
   return (
@@ -95,7 +96,7 @@ export default function ManagerDashboardPage() {
                     <span className="mr-2 inline-flex rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-xs capitalize text-amber-300">
                       {t(`alertType.${a.type}`) === `alertType.${a.type}` ? a.type.replace("_", " ") : t(`alertType.${a.type}`)}
                     </span>
-                    <span className="text-slate-300">{lang === "ar" && a.detail_ar ? a.detail_ar : a.detail}</span>
+                    <span className="text-slate-300">{alertText(lang, a.type, a.detail, a.detail_ar)}</span>
                     {a.driver_name && <span className="text-slate-500"> · {a.driver_name}</span>}
                   </div>
                   <span className="shrink-0 text-xs text-slate-500">

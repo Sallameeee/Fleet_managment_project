@@ -17,6 +17,7 @@ import {
   type ManagerDriver,
 } from "@/lib/manager";
 import { useT } from "@/lib/i18n";
+import { alertText } from "@/lib/alertText";
 import { useToast } from "@/lib/toast";
 import Button from "@/components/Button";
 import Input from "@/components/Input";
@@ -128,7 +129,7 @@ function Feed() {
       <div className="mb-3 flex flex-wrap items-center gap-2">
         <select value={fType} onChange={(e) => setFType(e.target.value)} className="rounded-lg border border-ink-700 bg-ink-850 px-2.5 py-1.5 text-sm text-slate-100">
           <option value="">{t("alerts.allTypes")}</option>
-          {EVENT_TYPES.map((ty) => <option key={ty} value={ty}>{ty}</option>)}
+          {EVENT_TYPES.map((ty) => <option key={ty} value={ty}>{t(`alertType.${ty}`)}</option>)}
         </select>
         <select value={fRead} onChange={(e) => setFRead(e.target.value)} className="rounded-lg border border-ink-700 bg-ink-850 px-2.5 py-1.5 text-sm text-slate-100">
           <option value="">{t("alerts.readAndUnread")}</option>
@@ -165,7 +166,7 @@ function Feed() {
             {alerts.map((a) => (
               <tr key={a.id} className={a.is_read ? "" : "bg-amber-500/5"}>
                 <td className="px-4 py-3"><span className="inline-flex rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-xs capitalize text-amber-300">{t(`alertType.${a.type}`) === `alertType.${a.type}` ? a.type.replace("_", " ") : t(`alertType.${a.type}`)}</span></td>
-                <td className="px-4 py-3 text-slate-300">{lang === "ar" && a.detail_ar ? a.detail_ar : a.detail}</td>
+                <td className="px-4 py-3 text-slate-300">{alertText(lang, a.type, a.detail, a.detail_ar)}</td>
                 <td className="px-4 py-3 text-slate-400">{a.driver_name ?? "—"}</td>
                 <td className="px-4 py-3 text-slate-400">{a.vehicle_bus_number ?? "—"}</td>
                 <td className="px-4 py-3 text-xs text-slate-500">{a.occurred_at ? a.occurred_at.replace("T", " ").slice(0, 16) : "—"}</td>
@@ -307,9 +308,9 @@ function RulesManager() {
             {rules.map((r) => (
               <tr key={r.id} className="hover:bg-ink-900/40">
                 <td className="px-4 py-3 text-white">{r.name}</td>
-                <td className="px-4 py-3 capitalize text-slate-300">{r.type.replace("_", " ")}</td>
+                <td className="px-4 py-3 text-slate-300">{t(`alertType.${r.type}`) === `alertType.${r.type}` ? r.type.replace("_", " ") : t(`alertType.${r.type}`)}</td>
                 <td className="px-4 py-3 text-slate-300">{r.threshold ?? "—"}</td>
-                <td className="px-4 py-3 capitalize text-slate-400">{r.target_kind}{r.target_ids && r.target_ids.length ? ` (${r.target_ids.length})` : ""}</td>
+                <td className="px-4 py-3 text-slate-400">{r.target_kind === "vehicles" ? t("alerts.targetVehicles") : r.target_kind === "drivers" ? t("alerts.targetDrivers") : t("alerts.targetAll")}{r.target_ids && r.target_ids.length ? ` (${r.target_ids.length})` : ""}</td>
                 <td className="px-4 py-3">
                   <button onClick={() => toggleRule(r)} className={`rounded-full px-2.5 py-0.5 text-xs ${r.is_active ? "bg-brand/15 text-brand-sage" : "bg-ink-800 text-slate-400"}`}>
                     {r.is_active ? t("common.active") : t("alerts.ruleOff")}
@@ -338,11 +339,11 @@ function RulesManager() {
             <label className="block">
               <span className="mb-1.5 block text-sm font-medium text-slate-300">{t("common.type")}</span>
               <select value={type} onChange={(e) => setType(e.target.value)} className="w-full rounded-lg border border-ink-700 bg-ink-850 px-3 py-2.5 text-slate-100 focus:border-brand focus:outline-none">
-                {ALERT_TYPES.map((ty) => <option key={ty} value={ty}>{ty}</option>)}
+                {ALERT_TYPES.map((ty) => <option key={ty} value={ty}>{t(`alertType.${ty}`)}</option>)}
               </select>
             </label>
             {type !== "short_stop" && (
-              <Input label={`${t("alerts.threshold")} (${THRESHOLD_LABEL[type]})`} type="number" min={0} step="any" value={threshold} onChange={(e) => setThreshold(e.target.value)} required />
+              <Input label={`${t("alerts.threshold")} (${t(`editlogs.unit.${THRESHOLD_LABEL[type]}`) === `editlogs.unit.${THRESHOLD_LABEL[type]}` ? THRESHOLD_LABEL[type] : t(`editlogs.unit.${THRESHOLD_LABEL[type]}`)})`} type="number" min={0} step="any" value={threshold} onChange={(e) => setThreshold(e.target.value)} required />
             )}
           </div>
           {type === "short_stop" && <p className="text-xs text-slate-500">{t("alerts.shortStopNote")}</p>}

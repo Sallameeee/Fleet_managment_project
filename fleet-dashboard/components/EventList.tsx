@@ -2,6 +2,7 @@
 
 import { useT } from "@/lib/i18n";
 import { type LogEvent } from "@/lib/manager";
+import { alertText } from "@/lib/alertText";
 
 // Per-type styling for the event badge (reuses the alert types the engine emits).
 const TYPE_STYLE: Record<string, { cls: string; icon: string }> = {
@@ -64,7 +65,7 @@ export default function EventList({
                   </span>
                 </div>
                 {(e.detail || e.detail_ar) && (
-                  <div className="mt-0.5 text-xs text-slate-400">{lang === "ar" && e.detail_ar ? e.detail_ar : e.detail}</div>
+                  <div className="mt-0.5 text-xs text-slate-400">{alertText(lang, e.type, e.detail, e.detail_ar)}</div>
                 )}
                 <div className="mt-1 text-[11px] text-slate-500">{fmtTime(e.occurred_at)}</div>
               </div>

@@ -27,6 +27,28 @@ export default function RouteDetail({
   const markersRef = useRef<mapboxgl.Marker[]>([]);
   const [deleting, setDeleting] = useState(false);
   const [confirming, setConfirming] = useState(false);
+  // VIEW mode: the stop the manager tapped — highlighted in the list and on the
+  // map, and the map flies to it. Read-only; editing is only via the Edit button.
+  const [focusedIdx, setFocusedIdx] = useState<number | null>(null);
+  const focusedRef = useRef<number | null>(null);
+  focusedRef.current = focusedIdx;
+
+  function styleMarker(el: HTMLElement, i: number, focused: boolean) {
+    el.textContent = String(i + 1);
+    el.style.cssText =
+      `width:${focused ? 32 : 26}px;height:${focused ? 32 : 26}px;border-radius:9999px;background:${color};color:#fff;` +
+      `display:flex;align-items:center;justify-content:center;font-size:${focused ? 13 : 12}px;font-weight:700;cursor:pointer;` +
+      `border:${focused ? 3 : 2}px solid #fff;box-shadow:${focused ? "0 0 0 4px rgba(255,255,255,.35)," : ""}0 1px 4px rgba(0,0,0,.4);` +
+      `transition:width .15s,height .15s`;
+  }
+
+  function focusStop(i: number) {
+    setFocusedIdx(i);
+    markersRef.current.forEach((m, j) => styleMarker(m.getElement(), j, j === i));
+    const s = stops[i];
+    const map = mapRef.current;
+    if (s && map) map.flyTo({ center: [s.lng, s.lat], zoom: Math.max(map.getZoom(), 15), duration: 600 });
+  }
 
   function drawLine(map: MapboxMap, geometry: GeoJSON.Geometry) {
     const data = { type: "Feature" as const, geometry, properties: {} };
@@ -53,11 +75,12 @@ export default function RouteDetail({
     stops.forEach((s, i) => {
       bounds.extend([s.lng, s.lat]);
       const el = document.createElement("div");
-      el.textContent = String(i + 1);
-      el.style.cssText =
-        `width:26px;height:26px;border-radius:9999px;background:${color};color:#fff;` +
-        `display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;` +
-        `border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.4)`;
+      styleMarker(el, i, focusedRef.current === i);
+      el.title = s.name;
+      el.addEventListener("click", (e) => {
+        e.stopPropagation();
+        focusStop(i);
+      });
       markersRef.current.push(new mapboxgl.Marker({ element: el }).setLngLat([s.lng, s.lat]).addTo(map));
     });
     if (stops.length === 1) {
@@ -78,6 +101,7 @@ export default function RouteDetail({
     render(map);
   }
   function handleStyleChange(map: MapboxMap) {
+    mapRef.current = map; // style.load can precede (or replace) `load` — bind here too
     render(map); // setStyle wiped layers; redraw
   }
 
@@ -112,18 +136,18 @@ export default function RouteDetail({
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col bg-ink-950">
-      <header className="flex items-center justify-between border-b border-ink-800 px-5 py-3">
-        <h2 className="text-lg font-semibold text-white">{route.name}</h2>
-        <div className="flex items-center gap-2">
+      <header className="flex items-center justify-between gap-2 border-b border-ink-800 px-4 py-3 sm:px-5">
+        <h2 className="min-w-0 truncate text-lg font-semibold text-white">{route.name}</h2>
+        <div className="flex shrink-0 items-center gap-2">
           <button
             onClick={onEdit}
-            className="rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white hover:bg-brand-sage"
+            className="rounded-lg bg-brand px-3 py-2 text-sm font-medium text-white hover:bg-brand-sage sm:px-4"
           >
             {t("common.edit")}
           </button>
           <button
             onClick={() => { setDeleteError(null); setConfirming(true); }}
-            className="rounded-lg border border-red-500/50 px-4 py-2 text-sm font-medium text-red-300 hover:bg-red-500/10"
+            className="rounded-lg border border-red-500/50 px-3 py-2 text-sm font-medium text-red-300 hover:bg-red-500/10 sm:px-4"
           >
             {t("common.delete")}
           </button>
@@ -131,14 +155,16 @@ export default function RouteDetail({
         </div>
       </header>
 
-      <div className="flex min-h-0 flex-1">
-        {/* Map (read-only, kept LTR so it never mirrors under RTL) */}
-        <div dir="ltr" className="relative min-w-0 flex-1">
+      <div className="flex min-h-0 flex-1 flex-col md:flex-row">
+        {/* Map (read-only, kept LTR so it never mirrors under RTL). On phones it
+            takes the top ~42% of the screen and the stop list scrolls under it;
+            on desktop the two sit side by side. */}
+        <div dir="ltr" className="relative h-[42dvh] min-w-0 shrink-0 md:h-auto md:flex-1">
           <MapView className="h-full w-full" interactive onReady={handleReady} onStyleChange={handleStyleChange} />
         </div>
 
-        {/* Stops + times */}
-        <aside className="flex w-96 shrink-0 flex-col gap-3 overflow-y-auto border-s border-ink-800 bg-ink-900/50 p-4">
+        {/* Stops + times — tap a stop to fly the map to it */}
+        <aside className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto border-t border-ink-800 bg-ink-900/50 p-4 md:w-96 md:flex-none md:border-s md:border-t-0">
           <div className="flex gap-2 text-xs">
             <div className="flex-1 rounded-lg border border-ink-800 bg-ink-900/40 px-3 py-2">
               <div className="text-slate-500">{t("routes.totalKm")}</div>
@@ -169,7 +195,17 @@ export default function RouteDetail({
               const badge = next ? diffBadge(s.arrival_time, next.arrival_time) : null;
               return (
                 <li key={s.id ?? i}>
-                  <div className="rounded-lg border border-ink-800 p-2">
+                  <div
+                    role="button"
+                    tabIndex={0}
+                    aria-pressed={focusedIdx === i}
+                    onClick={() => focusStop(i)}
+                    onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); focusStop(i); } }}
+                    className={
+                      "cursor-pointer rounded-lg border p-2 transition-colors " +
+                      (focusedIdx === i ? "border-brand bg-brand/10 ring-1 ring-brand/40" : "border-ink-800 hover:border-ink-700 hover:bg-ink-900/60")
+                    }
+                  >
                     <div className="flex items-center gap-2">
                       <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-brand text-[10px] font-bold text-white">
                         {i + 1}

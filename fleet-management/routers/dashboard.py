@@ -9,6 +9,8 @@ from datetime import datetime, time, timedelta, timezone
 
 from fastapi import APIRouter, Depends, Query
 
+import trip_lifecycle as lifecycle
+from alert_text import alert_message_ar
 from auth import get_current_user
 import gps_filter
 from database import supabase
@@ -125,9 +127,12 @@ def dashboard_summary(
         }
 
     # --- Live alerts feed ----------------------------------------------------
+    # `meta` (046) carries the Arabic message of trip-lifecycle log points; older
+    # detection alerts are translated from their English detail (alert_text).
+    _cols = "id, type, detail, occurred_at, is_read, driver_id" + (", meta" if lifecycle.has_col("alerts", "meta") else "")
     alert_rows = (
         supabase.table("alerts")
-        .select("id, type, detail, occurred_at, is_read, driver_id")
+        .select(_cols)
         .eq("org_id", org_id)
         .order("occurred_at", desc=True)
         .limit(alerts_limit)
@@ -138,6 +143,8 @@ def dashboard_summary(
             "id": a["id"],
             "type": a["type"],
             "detail": a.get("detail"),
+            "detail_ar": ((a.get("meta") or {}).get("message_ar") if isinstance(a.get("meta"), dict) else None)
+            or alert_message_ar(a.get("type"), a.get("detail")),
             "occurred_at": a.get("occurred_at"),
             "is_read": a.get("is_read"),
             "driver_name": driver_name.get(a.get("driver_id")),

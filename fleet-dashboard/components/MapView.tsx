@@ -55,9 +55,33 @@ export default function MapView({
   /** Fires after any style reload (theme OR switcher), so callers re-add layers. */
   onStyleChange?: (map: mapboxgl.Map) => void;
 }) {
-  const { t } = useT();
+  const { t, lang } = useT();
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<mapboxgl.Map | null>(null);
+  // Map label language follows the UI: Arabic UI → Arabic tile labels (Mapbox
+  // Streets carries `name_ar`; Mapbox's own `name` is the fallback when a
+  // place has no Arabic label). Re-applied after every style load.
+  const langRef = useRef(lang);
+  langRef.current = lang;
+  function applyLabelLanguage(map: mapboxgl.Map) {
+    const style = map.getStyle();
+    if (!style?.layers) return;
+    const field: mapboxgl.ExpressionSpecification =
+      langRef.current === "ar" ? ["coalesce", ["get", "name_ar"], ["get", "name"]] : ["coalesce", ["get", "name_en"], ["get", "name"]];
+    for (const layer of style.layers) {
+      if (layer.type !== "symbol" || !layer.layout || !("text-field" in layer.layout)) continue;
+      try {
+        map.setLayoutProperty(layer.id, "text-field", field);
+      } catch {
+        /* layer without a name field */
+      }
+    }
+  }
+  useEffect(() => {
+    const map = mapRef.current;
+    if (map && map.isStyleLoaded()) applyLabelLanguage(map);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lang]);
   // When the user picks a style from the switcher, the theme observer stops
   // auto-swapping so the manual choice sticks across app light/dark toggles.
   const manualStyleRef = useRef<string | null>(null);
@@ -86,11 +110,17 @@ export default function MapView({
     mapRef.current = map;
     map.addControl(new mapboxgl.NavigationControl({ showCompass: false }), "top-right");
 
-    map.on("load", () => onReadyRef.current?.(map));
+    map.on("load", () => {
+      applyLabelLanguage(map);
+      onReadyRef.current?.(map);
+    });
     map.on("click", (e) =>
       onClickRef.current?.({ lng: e.lngLat.lng, lat: e.lngLat.lat }),
     );
-    map.on("style.load", () => onStyleRef.current?.(map));
+    map.on("style.load", () => {
+      applyLabelLanguage(map);
+      onStyleRef.current?.(map);
+    });
 
     // Swap the basemap when the theme (html.light) toggles. Markers survive a
     // setStyle; layers/sources are re-added by callers via onStyleChange.

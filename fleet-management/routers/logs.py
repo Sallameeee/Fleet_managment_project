@@ -17,6 +17,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
 
+from alert_text import alert_message_ar
 from auth import require_permission
 from capacity_logic import LOCAL_TZ, require_school_org
 from database import supabase
@@ -62,7 +63,7 @@ def _labelled(events: list) -> list:
         e["label_ar"] = EVENT_LABELS_AR.get(t, e["label"])
         # Lifecycle events carry ready-made bilingual messages in alerts.meta.
         meta = e.get("meta") if isinstance(e.get("meta"), dict) else {}
-        e["detail_ar"] = meta.get("message_ar") or e.get("detail")
+        e["detail_ar"] = meta.get("message_ar") or alert_message_ar(t, e.get("detail")) or e.get("detail")
         e["end_reason"] = meta.get("reason") if t == "trip_ended" else None
     return events
 

@@ -17,6 +17,8 @@ import Button from "@/components/Button";
  */
 export default function EditLogsPage() {
   const { t, lang } = useT();
+  // dict lookup with a fallback (t() returns the key itself when missing)
+  const tOr = (key: string, fallback: string) => (t(key) === key ? fallback : t(key));
   const isSchool = useIsSchool();
   const toast = useToast();
   const [data, setData] = useState<LogSettings | null>(null);
@@ -114,8 +116,8 @@ export default function EditLogsPage() {
                   return (
                     <tr key={e.type} className={v.enabled ? "" : "opacity-60"}>
                       <td className="px-4 py-3 align-top">
-                        <div className="font-medium text-white">{lang === "ar" && e.label_ar ? e.label_ar : e.label}</div>
-                        <div className="text-xs text-slate-500">{e.help}</div>
+                        <div className="font-medium text-white">{lang === "ar" ? e.label_ar || tOr(`editlogs.type.${e.type}`, e.label) : e.label}</div>
+                        <div className="text-xs text-slate-500">{lang === "ar" ? e.help_ar || tOr(`editlogs.help.${e.type}`, e.help) : e.help}</div>
                       </td>
                       <td className="px-4 py-3 align-top">
                         <label className="inline-flex cursor-pointer items-center gap-2">
@@ -131,7 +133,7 @@ export default function EditLogsPage() {
                       </td>
                       <td className="px-4 py-3 align-top">
                         {e.default_threshold == null ? (
-                          <span className="text-xs text-slate-500">{t("editlogs.noThreshold")}</span>
+                          <span className="text-xs text-slate-500">{e.type === "short_stop" ? t("editlogs.noThreshold") : t("editlogs.noLimit")}</span>
                         ) : (
                           <div className="flex flex-wrap items-center gap-2">
                             <input
@@ -143,7 +145,7 @@ export default function EditLogsPage() {
                               onChange={(ev) => setDraft((d) => ({ ...d, [e.type]: { ...d[e.type], threshold: ev.target.value } }))}
                               className={inputCls}
                             />
-                            <span className="text-sm text-slate-400">{e.unit}</span>
+                            <span className="text-sm text-slate-400">{e.unit ? tOr(`editlogs.unit.${e.unit}`, e.unit) : ""}</span>
                             <span className="text-xs text-slate-600">({t("editlogs.default")} {e.default_threshold})</span>
                             {e.has_duration && (
                               <span className="flex items-center gap-1.5 text-sm text-slate-400">

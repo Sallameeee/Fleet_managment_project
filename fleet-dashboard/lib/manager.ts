@@ -204,9 +204,15 @@ export function canAccess(
   return profile.role === "owner" || profile.permissions?.[perm] === true;
 }
 
-/** Public per-vehicle passenger tracking URL (backend /track endpoint). */
+/** Public per-vehicle passenger tracking URL — the dashboard's own public map
+ * page (app/track/[token]), which reads the backend's unauthenticated
+ * GET /track/{token} JSON. The backend URL was previously handed out here, so
+ * the "link" opened raw JSON instead of a map. */
 export function trackingUrl(shareToken: string): string {
-  return `${API_URL}/track/${shareToken}`;
+  const origin =
+    process.env.NEXT_PUBLIC_DASHBOARD_URL ??
+    (typeof window !== "undefined" ? window.location.origin : "");
+  return `${origin}/track/${shareToken}`;
 }
 
 // --- Drivers -----------------------------------------------------------------
