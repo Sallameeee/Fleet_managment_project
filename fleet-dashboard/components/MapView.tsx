@@ -21,6 +21,21 @@ if (hasMapboxToken()) {
   mapboxgl.accessToken = MAPBOX_TOKEN;
 }
 
+// Arabic (and any RTL script) label shaping. Without this plugin Mapbox draws
+// Arabic letter-by-letter, disconnected and in the wrong order ("عراش" for
+// "شارع"). Registered ONCE per page (module scope — every dashboard map goes
+// through this component); a second setRTLTextPlugin call throws, hence the
+// status guard. lazy=true: the worker only downloads it when a style actually
+// contains RTL text (i.e. once labels switch to name_ar).
+const RTL_PLUGIN_URL = "https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-rtl-text/v0.3.0/mapbox-gl-rtl-text.js";
+if (typeof window !== "undefined" && mapboxgl.getRTLTextPluginStatus?.() === "unavailable") {
+  try {
+    mapboxgl.setRTLTextPlugin(RTL_PLUGIN_URL, null, true);
+  } catch {
+    /* already registered by another bundle chunk — fine */
+  }
+}
+
 // Theme-aware style: a clean light/dark Mapbox style picked from the html `light`
 // class (set by the theme toggle). Both read well; brand overlays sit on top.
 function styleForTheme(): string {
