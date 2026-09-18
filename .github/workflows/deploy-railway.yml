@@ -3,9 +3,12 @@ name: Deploy verified image to Railway
 on:
   # The CI workflow only concludes successfully after the Docker Hub push has
   # completed, so this deployment always consumes a verified published image.
+  # NOTE: the build workflow runs on pushes to `main`, so this automatic path
+  # fires on main as well (it used to be wired to `CI` only, which never
+  # matched once the build moved to main — deploys silently never happened).
   workflow_run:
     workflows: ["Build, test, and publish backend image"]
-    branches: [CI]
+    branches: [main, CI]
     types: [completed]
   # Allows an intentional manual redeploy from the Actions page.
   workflow_dispatch:
@@ -20,15 +23,26 @@ jobs:
       github.event_name == 'workflow_dispatch' ||
       (github.event.workflow_run.conclusion == 'success' &&
        github.event.workflow_run.event == 'push' &&
-       github.event.workflow_run.head_branch == 'CI')
+       (github.event.workflow_run.head_branch == 'main' ||
+        github.event.workflow_run.head_branch == 'CI'))
     runs-on: ubuntu-latest
     env:
+      # A Railway PROJECT token: it scopes every CLI call to the project +
+      # environment it was created for, so no `railway link` is needed.
       RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
       RAILWAY_SERVICE: ${{ secrets.RAILWAY_SERVICE }}
+      # Pinned: `@latest` (5.57.x) removed `status --service` and broke this job.
+      # 5.57.9 is the version these commands were verified against.
+      RAILWAY_CLI: "@railway/cli@5.57.9"
 
     steps:
-      - name: Confirm the target Railway service is available
-        run: npx -y @railway/cli@latest status --service "$RAILWAY_SERVICE" --json
+      - name: Confirm the Railway project (from the token) is reachable
+        # `railway status` no longer takes --service; it reports the project the
+        # token is scoped to. Failing here means the token/secret is wrong.
+        run: npx -y "$RAILWAY_CLI" status --json
 
-      - name: Redeploy the verified Docker Hub image
-        run: npx -y @railway/cli@latest redeploy --service "$RAILWAY_SERVICE" --yes
+      - name: Deploy the newly published Docker Hub image
+        # `redeploy` alone re-deploys the EXISTING deployment (same image).
+        # `--from-source` makes Railway pull the latest image from the
+        # service's configured source (the Docker Hub tag CI just pushed).
+        run: npx -y "$RAILWAY_CLI" redeploy --service "$RAILWAY_SERVICE" --from-source --yes
