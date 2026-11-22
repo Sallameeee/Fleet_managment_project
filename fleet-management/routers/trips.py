@@ -769,7 +769,22 @@ def trip_status(trip_id: str, current_user: dict = Depends(require_role("driver"
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"No trip with id '{trip_id}' exists in your organization.",
         )
-    return {"id": rows[0]["id"], "status": rows[0]["status"], "ended_at": rows[0].get("ended_at")}
+    row = rows[0]
+    # A trip the sweeper auto-closed for SILENCE (app_closed / device_power /
+    # uncertain) was never really over — the phone was offline, and its next
+    # newer fix reopens it (see post_pings). Report it as still ACTIVE to the
+    # driver app: otherwise the app's 15 s status watcher can see 'completed' a
+    # moment before its offline backlog reaches the server, reset itself and
+    # DROP the buffered fixes — a whole offline stretch of the trip lost.
+    if row["status"] == "completed":
+        try:
+            sig = lifecycle.load_signals(trip_id)
+            if sig.get("end_reason") in lifecycle.INFERRED_REASONS:
+                return {"id": row["id"], "status": "active", "ended_at": None,
+                        "auto_closed_at": row.get("ended_at")}
+        except Exception:
+            pass
+    return {"id": row["id"], "status": row["status"], "ended_at": row.get("ended_at")}
 
 
 def _load_own_active_trip(trip_id: str, current_user: dict) -> dict:
