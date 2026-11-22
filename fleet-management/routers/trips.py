@@ -1707,6 +1707,20 @@ def _process_pings(trip: dict, norm_pings: list, anchor: Optional[dict] = None) 
         ).data
         open_by_stop = {r["stop_id"]: {"id": r["id"], "arrived_at": _parse_dt(r["arrived_at"])} for r in open_rows}
         last_inside = {sid: ev["arrived_at"] for sid, ev in open_by_stop.items()}
+        # `last_inside` lives only for this request. The live app posts ONE fix
+        # per request, so without carrying state across requests every departure
+        # read departed == arrived_at -> "Stopped 0.0 min" (a false short_stop on
+        # every stop). The anchor (newest stored clean fix before this batch)
+        # carries it: while a stop's event is open, every stored fix since the
+        # arrival was inside, so an anchor inside the geofence is the latest
+        # "inside" moment.
+        if anchor and anchor.get("recorded_dt") is not None:
+            stops_by_id = {s["id"]: s for s in stops}
+            for sid, ev in open_by_stop.items():
+                s = stops_by_id.get(sid)
+                if (s and anchor["recorded_dt"] >= ev["arrived_at"]
+                        and _haversine_m(anchor["lat"], anchor["lng"], s["lat"], s["lng"]) <= GEOFENCE_RADIUS_M):
+                    last_inside[sid] = anchor["recorded_dt"]
 
         for n in ordered:
             t = n["recorded_dt"]
