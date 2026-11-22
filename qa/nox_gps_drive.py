@@ -28,7 +28,10 @@ def hav(a, b):
 def set_location(lat, lng, speed_mps):
     cmd = (f"am startservice --user 0 -n io.appium.settings/.LocationService "
            f"--es longitude {lng:.7f} --es latitude {lat:.7f} --es altitude 70 --es speed {speed_mps:.2f}")
-    subprocess.run([ADB, "-s", SERIAL, "shell", cmd], capture_output=True, timeout=20)
+    try:
+        subprocess.run([ADB, "-s", SERIAL, "shell", cmd], capture_output=True, timeout=20)
+    except subprocess.TimeoutExpired:
+        pass  # one slow adb call must not end a long drive; the next tick sets the next point
 
 
 def main():

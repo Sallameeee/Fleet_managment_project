@@ -47,7 +47,12 @@ def main():
     check("GET / 200 ok", code == 200 and isinstance(root, dict) and root.get("status") == "ok", f"{code} {str(root)[:160]}")
     head = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "origin/main"], capture_output=True, text=True).stdout.strip()
     live = (root or {}).get("commit") if isinstance(root, dict) else None
-    check("deployed commit == origin/main", bool(live) and head.startswith(live), f"live={live} origin/main={head[:12]}")
+    # The deployed BACKEND must be current: no difference under fleet-management/
+    # between the live commit and origin/main (qa/docs-only commits need no deploy).
+    same_code = bool(live) and subprocess.run(
+        ["git", "-C", str(ROOT), "diff", "--quiet", live, "origin/main", "--", "fleet-management"],
+        capture_output=True).returncode == 0
+    check("deployed backend == origin/main backend", same_code, f"live={live} origin/main={head[:12]}")
     sw = (root or {}).get("sweeper") or {}
     last = sw.get("last_sweep_at")
     age = (datetime.now(timezone.utc) - datetime.fromisoformat(last)).total_seconds() if last else None
