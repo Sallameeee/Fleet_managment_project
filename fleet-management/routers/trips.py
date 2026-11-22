@@ -543,9 +543,30 @@ def start_trip(
     )
 
 
+class EndTripIn(BaseModel):
+    # When the driver pressed End Trip (phone clock). The app sends it always; it
+    # matters when the End was pressed OFFLINE: the app keeps it queued, uploads
+    # the buffered fixes once the connection returns, then delivers this End with
+    # the original time. Optional — older builds send {} and the server's clock
+    # is used, as before.
+    ended_at: Optional[datetime] = None
+
+
+def _driver_end_time(trip: dict, body: Optional[EndTripIn], now: datetime) -> datetime:
+    """The trip's end: the phone's End-pressed time clamped to [started_at, now]
+    (a wrong phone clock can neither end a trip before it began nor in the
+    future), else now."""
+    if not body or body.ended_at is None:
+        return now
+    dt = body.ended_at if body.ended_at.tzinfo else body.ended_at.replace(tzinfo=timezone.utc)
+    started = gps_filter.parse_dt(trip.get("started_at")) or now
+    return max(started, min(dt, now))
+
+
 @router.post("/{trip_id}/end")
 def end_trip(
     trip_id: str,
+    body: Optional[EndTripIn] = None,
     current_user: dict = Depends(require_role("driver")),
 ):
     org_id = current_user["org_id"]
@@ -574,8 +595,22 @@ def end_trip(
             detail="This trip belongs to another driver. You can only end your own.",
         )
 
+    now = datetime.now(timezone.utc)
+    end_dt = _driver_end_time(trip, body, now)
+
     # Idempotent-ish: if it's already finished, just report that (no error).
     if trip["status"] == "completed":
+        # EXCEPT an End pressed OFFLINE that arrives after the sweeper auto-closed
+        # the trip for silence with a GUESSED reason: the driver's own End (with
+        # the time it was pressed) replaces the guess — a normal end. A trip that
+        # already ended normally is never rewritten (repeat deliveries are no-ops).
+        if body is not None and body.ended_at is not None:
+            revised = lifecycle.revise_to_driver_end(trip, at=end_dt, reported_at=now)
+            if revised:
+                _compute_trip_performance(revised)  # school only; the backlog may add stop events
+                enriched = _enrich_one(revised)
+                enriched["message"] = "Recorded your End Trip with the time you pressed it."
+                return enriched
         enriched = _enrich_one(trip)
         enriched["message"] = "This trip was already completed."
         return enriched
@@ -585,11 +620,11 @@ def end_trip(
             detail="This trip was cancelled and cannot be ended.",
         )
 
-    # Complete it.
+    # Complete it — at the moment the driver pressed End Trip (see EndTripIn).
     try:
         upd = (
             supabase.table("trips")
-            .update({"status": "completed", "ended_at": _now_iso()})
+            .update({"status": "completed", "ended_at": end_dt.isoformat()})
             .eq("id", trip_id)
             .execute()
         )
@@ -602,7 +637,7 @@ def end_trip(
     # School only, best-effort: compute + persist this trip's performance metrics.
     _compute_trip_performance(upd.data[0])
     # Trip-lifecycle log point (shared): TRIP ENDED — normally, by the driver.
-    lifecycle.on_trip_ended(upd.data[0], "normal", at=gps_filter.parse_dt(upd.data[0].get("ended_at")))
+    lifecycle.on_trip_ended(upd.data[0], "normal", at=end_dt, reported_at=now)
     return _enrich_one(upd.data[0])
 
 

@@ -50,6 +50,9 @@ log = logging.getLogger("trip_lifecycle")
 EVENT_TYPES = ("trip_started", "trip_ended", "connection_lost", "connection_restored")
 END_REASONS = ("normal", "cancelled", "driver_deactivated", "app_closed", "network_lost_resumed", "device_power", "uncertain")
 INFERRED_REASONS = ("app_closed", "device_power", "uncertain")  # can be revised to network_lost_resumed
+# Guessed ends that the driver's own (late-delivered) End Trip replaces with "normal".
+REVISABLE_BY_DRIVER_END = INFERRED_REASONS + ("network_lost_resumed",)
+LATE_END_REPORT_S = 120            # an End reaching the server this long after it was pressed was queued offline
 
 DEFAULT_CONN_LOST_GRACE_S = 90     # Edit Logs: connection_lost.threshold (seconds)
 DEFAULT_STALE_CLOSE_MIN = 30       # Edit Logs: trip_ended.threshold (minutes without ANY signal)
@@ -204,8 +207,12 @@ def build_messages(type_: str, p: dict) -> tuple[str, str]:
         ls = parse_dt(p.get("last_signal"))
         batt = p.get("battery")
         if r == "normal":
-            return (f"Trip ended normally {fmt_time_en(t)}{at_en} — driver pressed End Trip",
-                    f"انتهت الرحلة {fmt_time_ar(t)}{at_ar}: أنهى السائق الرحلة")
+            # reported_at: the End was pressed OFFLINE and reached the server later.
+            rep = parse_dt(p.get("reported_at"))
+            tail_en = f" (offline; delivered {fmt_time_en(rep)} when the connection returned)" if rep else ""
+            tail_ar = f" (دون إنترنت، ووصل الإنهاء {fmt_time_ar(rep)} بعد عودة الاتصال)" if rep else ""
+            return (f"Trip ended normally {fmt_time_en(t)}{at_en} — driver pressed End Trip{tail_en}",
+                    f"انتهت الرحلة {fmt_time_ar(t)}{at_ar}: أنهى السائق الرحلة{tail_ar}")
         if r == "cancelled":
             return (f"Trip cancelled by the manager {fmt_time_en(t)}", f"تم إلغاء الرحلة من الإدارة {fmt_time_ar(t)}")
         if r == "driver_deactivated":
@@ -424,19 +431,60 @@ def last_fix(trip_id: str) -> Optional[dict]:
 
 
 def on_trip_ended(trip: dict, reason: str, *, at: Optional[datetime] = None, detail: Optional[dict] = None,
-                  gap_min: Optional[int] = None) -> None:
+                  gap_min: Optional[int] = None, reported_at: Optional[datetime] = None) -> None:
     """Record HOW the trip ended (trips.end_reason) + the trip_ended log point at
-    the last accepted fix. `at` = the trip's ended_at."""
+    the last accepted fix. `at` = the trip's ended_at. `reported_at` = when the
+    server received the driver's End (later than `at` when it was queued offline)."""
     at = at or now_utc()
     sig = load_signals(trip["id"])
     fields: dict = {"end_reason": reason}
+    late = bool(reported_at and (reported_at - at).total_seconds() > LATE_END_REPORT_S)
+    if late:
+        detail = {**(detail if detail is not None else (sig.get("end_detail") or {})),
+                  "driver_end_at": at.isoformat(), "reported_at": reported_at.isoformat()}
     if detail is not None:
         fields["end_detail"] = detail
     update_trip(trip["id"], fields)
     fx = last_fix(trip["id"]) or {}
     params = {"reason": reason, "last_signal": (sig.get("last_signal_at") or fx.get("recorded_at") or at.isoformat()),
               "battery": sig.get("last_battery"), "net_state": sig.get("last_net_state"), "gap_min": gap_min}
+    if late:
+        params["reported_at"] = reported_at.isoformat()
     log_event(trip, "trip_ended", occurred_at=at, lat=fx.get("lat"), lng=fx.get("lng"), params=params)
+
+
+def revise_to_driver_end(trip: dict, *, at: datetime, reported_at: datetime) -> Optional[dict]:
+    """The driver's End Trip, pressed OFFLINE and delivered once the phone was
+    back online, for a trip the sweeper had meanwhile auto-closed with a GUESSED
+    reason (app_closed / device_power / uncertain, or network_lost_resumed after
+    the uploaded backlog). The driver's own End is the truth: ended_at = when it
+    was pressed, end_reason = normal, and the guessed trip_ended log point is
+    replaced. Returns the updated trip row, or None when the trip's end is not a
+    guess (a real End is never overwritten). Never raises."""
+    try:
+        sig = load_signals(trip["id"])
+        prev = sig.get("end_reason")
+        if prev not in REVISABLE_BY_DRIVER_END:
+            return None
+        upd = (
+            supabase.table("trips").update({"ended_at": at.isoformat()})
+            .eq("id", trip["id"]).eq("status", "completed").execute()
+        ).data
+        if not upd:
+            return None
+        ev = _find_event(trip["id"], "trip_ended")
+        if ev:  # the guessed end never happened; on_trip_ended logs the real one
+            try:
+                supabase.table("alerts").delete().eq("id", ev["id"]).execute()
+            except Exception:
+                pass
+        detail = dict(sig.get("end_detail") or {})
+        detail.update({"revised_from": prev, "guessed_ended_at": trip.get("ended_at")})
+        on_trip_ended({**trip, **upd[0]}, "normal", at=at, detail=detail, reported_at=reported_at)
+        return upd[0]
+    except Exception as exc:
+        log.warning("revise_to_driver_end %s failed: %s", trip.get("id"), str(exc)[:160])
+        return None
 
 
 def infer_end_reason(sig: dict, last_signal_at: Optional[datetime]) -> tuple[str, dict]:
