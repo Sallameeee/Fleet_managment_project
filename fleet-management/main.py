@@ -102,7 +102,18 @@ def _start_trip_lifecycle_sweeper() -> None:
 
 @app.get("/")
 def health_check():
-    return {"status": "ok", "service": "routemind-fleet"}
+    import os
+
+    import trip_lifecycle
+
+    return {
+        "status": "ok",
+        "service": "routemind-fleet",
+        # Which commit is live (Railway injects it); None when run locally.
+        "commit": (os.getenv("RAILWAY_GIT_COMMIT_SHA") or "")[:12] or None,
+        # Proves the background lifecycle sweeper is alive in this process.
+        "sweeper": trip_lifecycle.sweeper_status(),
+    }
 
 # Edit Logs (per-org event logging settings; shared by both modules).
 from routers import log_settings as _log_settings  # noqa: E402

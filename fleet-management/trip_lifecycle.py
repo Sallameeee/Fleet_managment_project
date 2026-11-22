@@ -579,6 +579,13 @@ def sweep_once(only_trip_ids: Optional[set] = None, now: Optional[datetime] = No
 
 
 _sweeper_started = False
+# Liveness of the background sweeper, surfaced on GET / so production can be
+# checked from outside (no logs access needed).
+_sweeper_status: dict = {"running": False, "last_sweep_at": None, "last_error_at": None}
+
+
+def sweeper_status() -> dict:
+    return {**_sweeper_status, "interval_s": SWEEP_INTERVAL_S}
 
 
 def start_sweeper() -> None:
@@ -587,13 +594,16 @@ def start_sweeper() -> None:
     if _sweeper_started or os.getenv("LIFECYCLE_SWEEP", "1") == "0":
         return
     _sweeper_started = True
+    _sweeper_status["running"] = True
 
     def _loop():
         time.sleep(5)
         while True:
             try:
                 sweep_once()
+                _sweeper_status["last_sweep_at"] = datetime.now(timezone.utc).isoformat()
             except Exception as exc:  # never let the loop die
+                _sweeper_status["last_error_at"] = datetime.now(timezone.utc).isoformat()
                 log.warning("sweep failed: %s", str(exc)[:160])
             time.sleep(SWEEP_INTERVAL_S)
 
