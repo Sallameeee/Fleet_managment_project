@@ -45,6 +45,9 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 _TRANSIENT_MARKERS = (
     "server disconnected", "broken pipe", "connection reset", "connection aborted",
     "remoteprotocolerror", "readerror", "writeerror", "connecterror", "eof occurred",
+    # Supabase's edge answered with an HTML error page (the request never reached
+    # PostgREST, whose errors are JSON): "400 Bad Request", 502/503/504 pages.
+    "<title>400 bad request</title>", "bad gateway", "gateway timeout", "service temporarily unavailable",
 )
 
 
