@@ -26,7 +26,7 @@ from alert_text import alert_meta
 from log_settings_logic import effective_log_settings
 from auth import require_permission, require_role
 from capacity_logic import effective_roster, org_module
-from database import supabase
+from database import is_transient, retry_transient, supabase
 
 router = APIRouter(prefix="/trips", tags=["trips"])
 
@@ -881,14 +881,16 @@ def _store_pings(to_store: list, row_fn) -> int:
     def _is_dup(msg: str) -> bool:
         return "duplicate key" in msg or "uq_location_pings" in msg
 
-    # 1. upsert, ignoring rows whose (trip_id, recorded_at) already exists
+    # 1. upsert, ignoring rows whose (trip_id, recorded_at) already exists.
+    # Idempotent, so a transient connection drop is simply retried; if it keeps
+    # failing the caller gets 503 (the app keeps its buffer and retries later).
     for _ in range(2):
         try:
-            res = (
+            res = retry_transient(lambda: (
                 supabase.table("location_pings")
                 .upsert(_rows(), on_conflict="trip_id,recorded_at", ignore_duplicates=True)
                 .execute()
-            )
+            ))
             return len(res.data)
         except Exception as exc:
             msg = str(exc)
@@ -897,6 +899,9 @@ def _store_pings(to_store: list, row_fn) -> int:
                 continue
             if "unique or exclusion constraint" in msg or "42P10" in msg:
                 break  # migration 042 not applied: no conflict target -> plain insert
+            if is_transient(exc):
+                raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                                    detail=f"Could not record pings right now (temporary): {msg}")
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Could not record pings: {msg}")
 
     # 2. plain insert (pre-042 databases)

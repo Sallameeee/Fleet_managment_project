@@ -20,7 +20,7 @@ import jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-from database import supabase
+from database import is_transient, retry_transient, supabase
 
 # auto_error=False so we can return our own clear 401 when the header iss
 # missing, instead of FastAPI's generic "Not authenticated" response.
@@ -88,8 +88,15 @@ def _verify_token(credentials: HTTPAuthorizationCredentials):
         )
 
     try:
-        user_response = supabase.auth.get_user(credentials.credentials)
+        user_response = retry_transient(lambda: supabase.auth.get_user(credentials.credentials))
     except Exception as exc:
+        if is_transient(exc):
+            # A connection hiccup to Supabase is NOT a bad token: answer 503 so
+            # the client retries, instead of a 401 that forces a needless refresh.
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Authentication service is temporarily unavailable. Please retry.",
+            )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=f"Invalid or expired token: {exc}",
