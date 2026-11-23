@@ -270,13 +270,21 @@ def my_assignments(current_user: dict = Depends(require_role("driver"))):
     if route_ids:
         routes = {
             x["id"]: x
-            for x in supabase.table("routes").select("id, name, start_time").in_("id", route_ids).execute().data
+            for x in _route_rows(route_ids)
         }
     if vehicle_ids:
         vehicles = {
             x["id"]: x
             for x in supabase.table("vehicles").select("id, bus_number").in_("id", vehicle_ids).execute().data
         }
+
+    stop_counts: dict = {}
+    if route_ids:
+        try:
+            for st in supabase.table("route_stops").select("route_id").in_("route_id", route_ids).execute().data:
+                stop_counts[st["route_id"]] = stop_counts.get(st["route_id"], 0) + 1
+        except Exception:
+            stop_counts = {}
 
     # First stop per route (for the "Directions to start point" button) — school only.
     first_stops: dict = {}
@@ -304,6 +312,10 @@ def my_assignments(current_user: dict = Depends(require_role("driver"))):
             "shift_label": r.get("shift_label"),
             "start_time": r.get("start_time"),
             "end_time": r.get("end_time"),
+            # Display extras for the app's assignment card (read-only).
+            "stop_count": stop_counts.get(r.get("route_id"), 0),
+            "route_total_km": route.get("total_km"),
+            "route_est_minutes": route.get("est_minutes"),
         }
         if is_school:
             # Scheduled start = the ASSIGNMENT's start_time (per-day), falling back
@@ -1210,6 +1222,162 @@ def trip_route_stops(
     return {"trip_id": trip_id, "route_id": trip["route_id"], "stops": stops}
 
 
+def _route_rows(route_ids: list) -> list:
+    """routes rows for the driver payloads; the length/duration columns are optional."""
+    try:
+        return supabase.table("routes").select("id, name, start_time, total_km, est_minutes").in_("id", route_ids).execute().data
+    except Exception:
+        return supabase.table("routes").select("id, name, start_time").in_("id", route_ids).execute().data
+
+
+_TRIP_KM_CACHE: dict = {}
+
+
+def _trip_distance_km(trip_id: str) -> Optional[float]:
+    """Driven distance of a COMPLETED trip from its accepted fixes (cached)."""
+    if trip_id in _TRIP_KM_CACHE:
+        return _TRIP_KM_CACHE[trip_id]
+    try:
+        rows = (
+            supabase.table("location_pings").select("lat, lng, is_outlier")
+            .eq("trip_id", trip_id).order("recorded_at", desc=False).limit(6000).execute().data
+        )
+    except Exception:
+        return None
+    pts = [(r["lat"], r["lng"]) for r in rows
+           if r.get("lat") is not None and r.get("lng") is not None and not r.get("is_outlier")]
+    total = 0.0
+    for (a, b), (c, d) in zip(pts, pts[1:]):
+        seg = _haversine_m(a, b, c, d)
+        if seg < 2000:  # a longer hop is a signal gap, not driving
+            total += seg
+    km = round(total / 1000, 1) if pts else None
+    _TRIP_KM_CACHE[trip_id] = km
+    return km
+
+
+@router.get("/my-schedule")
+def my_schedule(
+    start: Optional[date] = Query(None, description="First day (YYYY-MM-DD, Cairo). Default: today."),
+    days: int = Query(7, ge=1, le=31),
+    current_user: dict = Depends(require_role("driver")),
+):
+    """The signed-in DRIVER's (or school supervisor's) own schedule for a range of
+    days: each assignment with its status (scheduled / active / completed /
+    cancelled / missed), the recent completed trips (with driven distance) and
+    this month's totals. Read-only; always scoped to the caller."""
+    org_id = current_user["org_id"]
+    driver_id = current_user["id"]
+    today = datetime.now(LOCAL_TZ).date()
+    first = start or today
+    last = first + timedelta(days=days - 1)
+
+    rows = (
+        supabase.table("assignments")
+        .select("id, route_id, vehicle_id, trip_date, shift_label, start_time, end_time")
+        .eq("org_id", org_id).eq("driver_id", driver_id)
+        .gte("trip_date", first.isoformat()).lte("trip_date", last.isoformat())
+        .order("trip_date", desc=False).order("start_time", desc=False)
+        .execute().data
+    )
+    month_start = today.replace(day=1)
+    since = datetime.combine(min(first, month_start), time.min, tzinfo=LOCAL_TZ) - timedelta(days=31)
+    trip_rows = (
+        supabase.table("trips")
+        .select("id, assignment_id, route_id, vehicle_id, status, started_at, ended_at, end_reason")
+        .eq("org_id", org_id).eq("driver_id", driver_id)
+        .gte("started_at", since.isoformat())
+        .order("started_at", desc=True).limit(400)
+        .execute().data
+    )
+    route_ids = list({r["route_id"] for r in rows + trip_rows if r.get("route_id")})
+    vehicle_ids = list({r["vehicle_id"] for r in rows + trip_rows if r.get("vehicle_id")})
+    routes = {x["id"]: x for x in _route_rows(route_ids)} if route_ids else {}
+    vehicles = (
+        {x["id"]: x for x in supabase.table("vehicles").select("id, bus_number").in_("id", vehicle_ids).execute().data}
+        if vehicle_ids else {}
+    )
+    by_asg: dict = {}
+    for t in trip_rows:
+        if t.get("assignment_id"):
+            by_asg.setdefault(t["assignment_id"], []).append(t)
+    rank = {"active": 3, "completed": 2, "cancelled": 1}
+
+    def status_of(a: dict):
+        ts = sorted(by_asg.get(a["id"], []), key=lambda t: rank.get(t.get("status"), 0), reverse=True)
+        if ts:
+            return ts[0].get("status") or "scheduled", ts[0]
+        d = date.fromisoformat(str(a["trip_date"])[:10])
+        return ("missed" if d < today else "scheduled"), None
+
+    out_days = []
+    for i in range(days):
+        d = first + timedelta(days=i)
+        items = []
+        for a in rows:
+            if str(a.get("trip_date"))[:10] != d.isoformat():
+                continue
+            st, trip = status_of(a)
+            route = routes.get(a.get("route_id")) or {}
+            items.append({
+                "assignment_id": a["id"],
+                "route_id": a.get("route_id"),
+                "route_name": route.get("name"),
+                "vehicle_bus_number": (vehicles.get(a.get("vehicle_id")) or {}).get("bus_number"),
+                "shift_label": a.get("shift_label"),
+                "start_time": a.get("start_time") or route.get("start_time"),
+                "end_time": a.get("end_time"),
+                "status": st,
+                "trip_id": trip.get("id") if trip else None,
+            })
+        out_days.append({"date": d.isoformat(), "assignments": items})
+
+    def mins(t: dict) -> Optional[int]:
+        a, b = gps_filter.parse_dt(t.get("started_at")), gps_filter.parse_dt(t.get("ended_at"))
+        return int((b - a).total_seconds() // 60) if a and b and b > a else None
+
+    completed = [t for t in trip_rows if t.get("status") == "completed"]
+    recent = []
+    for t in completed[:5]:
+        route = routes.get(t.get("route_id")) or {}
+        recent.append({
+            "trip_id": t["id"],
+            "route_name": route.get("name"),
+            "vehicle_bus_number": (vehicles.get(t.get("vehicle_id")) or {}).get("bus_number"),
+            "started_at": t.get("started_at"),
+            "ended_at": t.get("ended_at"),
+            "end_reason": t.get("end_reason"),
+            "duration_min": mins(t),
+            "distance_km": _trip_distance_km(t["id"]),
+        })
+
+    def local_day(t: dict) -> Optional[date]:
+        dt = gps_filter.parse_dt(t.get("started_at"))
+        return dt.astimezone(LOCAL_TZ).date() if dt else None
+
+    month_trips = [t for t in completed if (local_day(t) or date.min) >= month_start]
+    month = None
+    if month_trips:
+        on_time = None
+        try:
+            perf = (
+                supabase.table("trip_performance").select("stops_total, stops_on_time")
+                .in_("trip_id", [t["id"] for t in month_trips]).execute().data
+            )
+            tot = sum(int(p.get("stops_total") or 0) for p in perf)
+            ok = sum(int(p.get("stops_on_time") or 0) for p in perf)
+            on_time = round(100 * ok / tot) if tot else None
+        except Exception:
+            on_time = None
+        month = {
+            "trips": len(month_trips),
+            "hours": round(sum(mins(t) or 0 for t in month_trips) / 60, 1),
+            "on_time_pct": on_time,
+        }
+    return {"today": today.isoformat(), "module": _org_module(org_id), "days": out_days,
+            "recent_trips": recent, "month": month}
+
+
 @router.get("/route-map/{route_id}")
 def route_map(
     route_id: str,
@@ -1224,7 +1392,7 @@ def route_map(
     org_id = current_user["org_id"]
     route = (
         supabase.table("routes")
-        .select("id, name, color, geometry, updated_at")
+        .select("id, name, color, geometry, updated_at, total_km, est_minutes")
         .eq("id", route_id)
         .eq("org_id", org_id)  # the route must belong to the driver's org
         .limit(1)
@@ -1248,6 +1416,8 @@ def route_map(
         "color": r.get("color"),
         "geometry": r.get("geometry"),  # GeoJSON LineString, or null for older routes
         "updated_at": r.get("updated_at"),  # bumps on any route/stop edit
+        "total_km": r.get("total_km"),
+        "est_minutes": r.get("est_minutes"),
         "stops": stops,
     }
 

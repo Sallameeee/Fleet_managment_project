@@ -17,6 +17,7 @@ from fastapi import APIRouter, HTTPException, status
 
 import gps_filter
 from database import supabase
+import branding
 
 router = APIRouter(prefix="/track", tags=["tracking (public)"])
 
@@ -58,6 +59,10 @@ def track(share_token: str):
             detail="Tracking link not found.",
         )
     vehicle = vehicle_rows[0]
+    # Public branding for the page header (org display name + logo only — the
+    # same things printed on the bus; never ids, phone or people).
+    _b = branding.org_branding(vehicle["org_id"])
+    brand = {"org_name": _b.get("org_name"), "org_logo_url": _b.get("org_logo_url")}
 
     # --- 2. Working hours (org local time). A window is enforced only when BOTH
     # bounds are set; otherwise tracking is always-on.
@@ -76,7 +81,7 @@ def track(share_token: str):
         now_local = datetime.now(LOCAL_TZ).time()
         if not _within_hours(start_t, end_t, now_local):
             # Outside hours: only the resume time, nothing sensitive.
-            return {"status": "outside_hours", "resumes_at": start_t.isoformat()}
+            return {"status": "outside_hours", "resumes_at": start_t.isoformat(), **brand}
 
     # --- 3. Current ACTIVE trip on this vehicle (most recent if more than one).
     trip_rows = (
@@ -90,7 +95,7 @@ def track(share_token: str):
         .execute()
     ).data
     if not trip_rows:
-        return {"status": "not_in_service"}
+        return {"status": "not_in_service", **brand}
     trip = trip_rows[0]
 
     # --- 4. Latest position (most recent ping). Whitelist lat/lng/recorded_at.
@@ -134,4 +139,5 @@ def track(share_token: str):
         "bus_number": vehicle["bus_number"],
         "position": position,
         "route": route,
+        **brand,
     }

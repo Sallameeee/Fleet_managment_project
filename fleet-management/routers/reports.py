@@ -385,6 +385,9 @@ def _render_pdf(report: dict) -> bytes:
 
     org = report["org"]["name"]
     per = report["period"]
+    import branding
+
+    story.extend(branding.pdf_header(report["org"].get("id"), org, "Fleet Report", styles, width_pt=doc.width))
     story.append(Paragraph(f"{org} — Fleet Report", styles["Title"]))
     story.append(
         Paragraph(

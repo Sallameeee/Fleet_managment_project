@@ -94,6 +94,10 @@ export interface ManagerProfile {
   // (backward compat before the flags backend is deployed). Gates nav + pages.
   enabled_features?: string[];
   permissions: Permissions | null;
+  // Branding (newer backend): org display name, logo URL (null = initials), phone.
+  org_name?: string | null;
+  org_logo_url?: string | null;
+  org_phone?: string | null;
 }
 
 interface LoginResponse {
@@ -184,6 +188,25 @@ export async function managerFetch(path: string, options: RequestInit = {}): Pro
     res = await send();
   }
   return res;
+}
+
+export interface OrgBranding {
+  org_name: string | null;
+  org_logo_url: string | null;
+  org_phone: string | null;
+}
+
+/** Upload / replace the signed-in manager's org logo (base64 data URL). */
+export async function uploadMyLogo(dataBase64: string, filename: string): Promise<OrgBranding> {
+  const res = await managerFetch("/branding/logo", { method: "PUT", body: JSON.stringify({ data_base64: dataBase64, filename }) });
+  if (!res.ok) throw new Error(await extractError(res, "Could not save the logo."));
+  return (await res.json()) as OrgBranding;
+}
+
+export async function removeMyLogo(): Promise<OrgBranding> {
+  const res = await managerFetch("/branding/logo", { method: "DELETE" });
+  if (!res.ok) throw new Error(await extractError(res, "Could not remove the logo."));
+  return (await res.json()) as OrgBranding;
 }
 
 /** Server-verified guard: GET /auth/me. Throws on 401 so callers can redirect. */

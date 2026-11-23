@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
+import { OrgLogoBadge } from "@/components/LogoUploader";
+
 export type NavItem = { href: string; label: string; badge?: number; group?: string };
 
 // Defaults = the super-admin nav, so existing `<Sidebar />` usage is unchanged.
@@ -17,8 +19,13 @@ export default function Sidebar({
   items = DEFAULT_ITEMS,
   open = false,
   onClose,
+  orgName,
+  logoUrl,
 }: {
   title?: string;
+  /** Branding: when set, the org's logo (or initials) and name replace the "F" box. */
+  orgName?: string | null;
+  logoUrl?: string | null;
   items?: NavItem[];
   /** Mobile off-canvas open state (ignored at md+ where the sidebar is static). */
   open?: boolean;
@@ -48,10 +55,20 @@ export default function Sidebar({
       {controllable && open && <div className="fixed inset-0 z-30 bg-black/50 md:hidden" onClick={onClose} aria-hidden />}
 
       <aside className={asideClass}>
-        <div className="mb-6 flex items-center gap-2 px-2">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-brand text-sm font-bold text-white">F</div>
-          <span className="font-semibold text-white">{title}</span>
-        </div>
+        {orgName || logoUrl ? (
+          <div className="mb-6 flex items-center gap-2.5 px-2">
+            <OrgLogoBadge url={logoUrl} name={orgName ?? title} size={36} />
+            <div className="min-w-0">
+              <div className="truncate font-semibold text-white" title={orgName ?? title}>{orgName ?? title}</div>
+              <div className="truncate text-xs text-slate-500">{title}</div>
+            </div>
+          </div>
+        ) : (
+          <div className="mb-6 flex items-center gap-2 px-2">
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-brand text-sm font-bold text-white">F</div>
+            <span className="font-semibold text-white">{title}</span>
+          </div>
+        )}
 
         <nav className="space-y-1">
           {items.map((item, i) => {

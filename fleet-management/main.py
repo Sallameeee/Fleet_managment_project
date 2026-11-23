@@ -9,6 +9,7 @@ from routers import (
     assignments,
     attendance,
     auth,
+    branding,
     bus_drivers,
     capacity,
     centers,
@@ -53,6 +54,7 @@ app.add_middleware(
 )
 
 app.include_router(auth.router)
+app.include_router(branding.router)
 app.include_router(organizations.router)
 app.include_router(drivers.router)
 # FEATURE-GATED routers: a disabled feature's endpoints 403 for that org (legacy
