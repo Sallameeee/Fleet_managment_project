@@ -17,19 +17,19 @@ import os
 import sys
 from datetime import datetime, timedelta, timezone
 
-from qa_lib import ROOT, api, iso, load_ledger, save_ledger, sb, utc_now
+from qa_lib import S_SLUG, U_SLUG, ROOT, api, iso, load_ledger, save_ledger, sb, utc_now
 
 sys.path.insert(0, str(ROOT / "fleet-management"))
 os.environ.setdefault("LIFECYCLE_SWEEP", "0")
 import trip_lifecycle  # noqa: E402
 
 led = load_ledger()
-o = led["orgs"]["acme-bus-co"]
+o = led["orgs"][U_SLUG]
 RESULTS = []
 
 
 def login(u):
-    return api("POST", "/auth/login", body={"login": f"{u['username']}@acme-bus-co", "password": u["password"]})[1]["access_token"]
+    return api("POST", "/auth/login", body={"login": f"{u['username']}@{U_SLUG}", "password": u["password"]})[1]["access_token"]
 
 
 TOK = login(o["drv2"])

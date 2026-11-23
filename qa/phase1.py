@@ -14,7 +14,7 @@ import sys
 import time
 from datetime import datetime, timedelta, timezone
 
-from qa_lib import (CAIRO, OUT, api, auth_admin, evidence, iso, load_ledger, mint_impersonation, password,
+from qa_lib import (S_SLUG, U_SLUG, CAIRO, OUT, api, auth_admin, evidence, iso, load_ledger, mint_impersonation, password,
                     save_ledger, sb, utc_now)
 
 led = load_ledger()
@@ -110,8 +110,8 @@ def section_auth():
         cpatch, _ = call("PATCH", f"/drivers/{o['drvoff']['id']}", own, {"is_active": False})
         code, d = staff_login(slug, "drvoff")
         rec("auth", f"{slug} deactivated driver login", cpatch == 200 and code == 403, f"patch={cpatch} login={code} {d}")
-    s, u = ORGS["school-test"], ORGS["acme-bus-co"]
-    c3, d3 = call("GET", "/vehicles", toks.get(("school-test", "manager")))
+    s, u = ORGS[S_SLUG], ORGS[U_SLUG]
+    c3, d3 = call("GET", "/vehicles", toks.get((S_SLUG, "manager")))
     items = d3.get("vehicles", []) if isinstance(d3, dict) else (d3 if isinstance(d3, list) else [])
     leak = any(v.get("id") in (u["vehicle"]["id"], u["vehicle2"]["id"]) for v in items)
     rec("auth", "tenant isolation (school /vehicles has no uni bus)", c3 == 200 and not leak,
@@ -197,12 +197,12 @@ def section_pipeline(toks):
 
 
 def section_isolation(toks, trips):
-    s, u = trips.get("school-test"), trips.get("acme-bus-co")
+    s, u = trips.get(S_SLUG), trips.get(U_SLUG)
     if not (s and u):
         return
-    c1, _ = call("GET", f"/trips/{u}/pings", toks[("school-test", "manager")])
-    c2, _ = call("GET", f"/trips/{s}/pings", toks[("acme-bus-co", "manager")])
-    c3, _ = call("GET", f"/trips/{u}/status", toks[("school-test", "drv1")])
+    c1, _ = call("GET", f"/trips/{u}/pings", toks[(S_SLUG, "manager")])
+    c2, _ = call("GET", f"/trips/{s}/pings", toks[(U_SLUG, "manager")])
+    c3, _ = call("GET", f"/trips/{u}/status", toks[(S_SLUG, "drv1")])
     rec("auth", "tenant isolation (cross-org trip reads)", all(c in (403, 404) for c in (c1, c2, c3)),
         f"school mgr->uni pings {c1}, uni mgr->school pings {c2}, school driver->uni status {c3}")
 
@@ -298,7 +298,7 @@ def section_edit_logs(toks):
     """Edit Logs honoured: disable speeding for school-test, send a 90 km/h fix on
     the restarted drv2 trip -> no speeding alert; then restore the org's EXACT
     previous log_settings via the service role."""
-    slug = "school-test"
+    slug = S_SLUG
     o = ORGS[slug]
     tid = (o.get("trip2") or {}).get("id")
     if not tid:
@@ -320,9 +320,9 @@ def section_edit_logs(toks):
         rec("edit-logs", "org log_settings restored exactly", back == original, f"restored={json.dumps(back)}")
     call("POST", f"/trips/{tid}/end", toks[(slug, "drv2")], key="POST /trips/{id}/end")
     # the same trip in the university org, ended normally
-    u = ORGS["acme-bus-co"]
+    u = ORGS[U_SLUG]
     if (u.get("trip2") or {}).get("id"):
-        call("POST", f"/trips/{u['trip2']['id']}/end", toks[("acme-bus-co", "drv2")], key="POST /trips/{id}/end")
+        call("POST", f"/trips/{u['trip2']['id']}/end", toks[(U_SLUG, "drv2")], key="POST /trips/{id}/end")
 
 
 def section_reads(toks):
