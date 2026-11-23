@@ -1473,7 +1473,7 @@ def _resolve_trip_stop(route_id: str, value: Optional[str]) -> Optional[str]:
     return match[0]["name"]
 
 
-@router.get("/{trip_id}/students")
+@router.get("/{trip_id}/students", dependencies=[Depends(feature_flags.require_feature("attendance"))])
 def trip_students(trip_id: str, current_user: dict = Depends(require_role("driver"))):
     """Students on the supervisor's active-trip route, with each student's boarded
     status FOR THIS TRIP. SCHOOL orgs only — University drivers get a 403 and see
@@ -1556,7 +1556,7 @@ def trip_students(trip_id: str, current_user: dict = Depends(require_role("drive
     }
 
 
-@router.post("/{trip_id}/attendance", status_code=status.HTTP_200_OK)
+@router.post("/{trip_id}/attendance", status_code=status.HTTP_200_OK, dependencies=[Depends(feature_flags.require_feature("attendance"))])
 def record_attendance(
     trip_id: str,
     body: AttendanceIn,
@@ -1615,7 +1615,7 @@ class BoardingFlagIn(BaseModel):
     note: Optional[str] = Field(None, max_length=500)
 
 
-@router.post("/{trip_id}/boarding-flag", status_code=status.HTTP_200_OK)
+@router.post("/{trip_id}/boarding-flag", status_code=status.HTTP_200_OK, dependencies=[Depends(feature_flags.require_feature("attendance"))])
 def flag_boarding(
     trip_id: str,
     body: BoardingFlagIn,
