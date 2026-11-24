@@ -101,6 +101,8 @@ export async function login(email: string, password: string): Promise<LoginRespo
   }
 
   const data = (await res.json()) as LoginResponse;
+  // Another admin's cached profile must never be shown for this account.
+  if (cachedSuperAdmin()?.id !== data.admin?.id) writeKey(ADMIN_PROFILE_KEY, null);
   storeSession("admin", data.access_token, data.refresh_token);
   return data;
 }

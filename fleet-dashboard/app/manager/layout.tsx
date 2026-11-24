@@ -170,6 +170,23 @@ export default function ManagerLayout({ children }: { children: React.ReactNode 
 
   if (!profile) {
     // Nothing cached yet (first visit in this browser): still never a sign-out.
+    if (reauth && impersonation)
+      return (
+        <div className="flex min-h-screen items-start justify-center pt-24">
+          <div className="w-full max-w-lg space-y-3 rounded-xl border border-amber-500/40 bg-amber-500/10 p-4 text-sm text-amber-100">
+            <p>{t("session.impEnded")}</p>
+            <button
+              onClick={() => {
+                managerLogout();
+                router.replace("/dashboard");
+              }}
+              className="rounded-md border border-amber-500/50 px-3 py-1 font-medium hover:bg-amber-500/20"
+            >
+              {t("session.backToPlatform")}
+            </button>
+          </div>
+        </div>
+      );
     if (reauth)
       return (
         <div className="min-h-screen">

@@ -135,6 +135,8 @@ export async function managerLogin(username: string, slug: string, password: str
   if (!res.ok) throw new Error(await extractError(res, "Login failed. Check your credentials."));
   const data = (await res.json()) as LoginResponse;
   writeKey(IMP_KEY, null); // a real sign-in ends any impersonated view
+  // Another person's cached profile must never be shown for this account.
+  if (cachedManagerProfile()?.id !== data.user?.id) writeKey(PROFILE_KEY, null);
   storeSession("manager", data.access_token, data.refresh_token);
   writeKey(SLUG_KEY, cleanSlug);
   return data.user;
