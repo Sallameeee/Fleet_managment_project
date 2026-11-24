@@ -15,17 +15,19 @@ import { useParams } from "next/navigation";
 import mapboxgl from "mapbox-gl";
 import MapView, { type MapboxMap } from "@/components/MapView";
 import { useT } from "@/lib/i18n";
+import { OrgLogoBadge } from "@/components/LogoUploader";
 import { DEFAULT_ROUTE_COLOR } from "@/lib/mapbox";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
 const POLL_MS = 10_000;
 
-type Track =
+type Brand = { org_name?: string | null; org_logo_url?: string | null };
+type Track = Brand & (
   | { status: "live"; bus_number: string; position: { lat: number; lng: number; recorded_at: string } | null; route: { name: string | null; stops: { name: string; lat: number; lng: number; order: number }[] } | null }
   | { status: "not_in_service" }
   | { status: "outside_hours"; resumes_at: string }
   | { status: "not_found" }
-  | { status: "error" };
+  | { status: "error" });
 
 function fmtClock(iso: string | null | undefined): string {
   if (!iso) return "";
@@ -142,7 +144,9 @@ export default function PublicTrackPage() {
   return (
     <div className="flex h-dvh flex-col bg-ink-950">
       <header className="flex items-center justify-between gap-3 border-b border-ink-800 px-4 py-3">
-        <div className="min-w-0">
+        {(track?.org_logo_url || track?.org_name) && <OrgLogoBadge url={track?.org_logo_url} name={track?.org_name} size={36} />}
+        <div className="min-w-0 flex-1">
+          {track?.org_name && <p className="truncate text-[11px] font-medium uppercase tracking-wide text-slate-500">{track.org_name}</p>}
           <h1 className="truncate text-base font-semibold text-white">{headline}</h1>
           {sub && <p className="truncate text-xs text-slate-400">{sub}</p>}
         </div>

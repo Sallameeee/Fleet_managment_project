@@ -16,6 +16,8 @@ import {
   type StaffRole,
 } from "@/lib/manager";
 import { useT } from "@/lib/i18n";
+import LogoUploader from "@/components/LogoUploader";
+import { managerMe, removeMyLogo, uploadMyLogo, type ManagerProfile } from "@/lib/manager";
 import { useIsSchool } from "@/lib/module";
 import { useToast } from "@/lib/toast";
 import Button from "@/components/Button";
@@ -58,6 +60,8 @@ export default function ManagerSettingsPage() {
         <h1 className="text-2xl font-semibold text-white">{t("nav.settings")}</h1>
         <p className="text-sm text-slate-400">{t("settings.subtitle")}</p>
       </div>
+
+      <BrandingSection />
 
       <div className="flex gap-1 border-b border-ink-800">
         {tabs.map((key) => (
@@ -433,5 +437,31 @@ function PermChecks({ value, onChange }: { value: Record<string, boolean>; onCha
         </label>
       ))}
     </div>
+  );
+}
+
+
+/** Organization logo (branding): shown in the apps, sidebar, public page and PDFs. */
+function BrandingSection() {
+  const { t } = useT();
+  const [me, setMe] = useState<ManagerProfile | null>(null);
+  useEffect(() => {
+    managerMe().then(setMe).catch(() => setMe(null));
+  }, []);
+  if (!me) return null;
+  return (
+    <section className="space-y-3 rounded-xl border border-ink-800 bg-ink-900/40 p-5">
+      <div>
+        <h2 className="text-lg font-semibold text-white">{t("brand.title")}</h2>
+        <p className="mt-1 text-sm text-slate-400">{t("brand.subtitle")}</p>
+      </div>
+      <LogoUploader
+        currentUrl={me.org_logo_url ?? null}
+        orgName={me.org_name ?? null}
+        upload={uploadMyLogo}
+        remove={removeMyLogo}
+        onChanged={(url) => window.dispatchEvent(new CustomEvent("routemind:branding", { detail: url }))}
+      />
+    </section>
   );
 }

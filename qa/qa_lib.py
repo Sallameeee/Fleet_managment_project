@@ -19,7 +19,9 @@ import jwt
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "qa" / "out"
 OUT.mkdir(parents=True, exist_ok=True)
-LEDGER = OUT / "fixtures.json"
+LEDGER = OUT / os.getenv("QA_LEDGER", "fixtures.json")
+S_SLUG = os.getenv("QA_SCHOOL_SLUG", "school-test")  # school org used by the suites
+U_SLUG = os.getenv("QA_UNI_SLUG", "acme-bus-co")  # university org used by the suites
 CAIRO = ZoneInfo("Africa/Cairo")
 API = os.getenv("QA_BASE", "https://fleetmanagmentproject-production-1bd7d791.up.railway.app").rstrip("/")
 

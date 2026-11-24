@@ -432,3 +432,39 @@ export async function deletePlatformUser(id: string): Promise<void> {
   const res = await apiFetch(`/admin/users/${id}`, { method: "DELETE" });
   if (!res.ok) throw new Error(await extractError(res, "Failed to delete platform user."));
 }
+
+
+// --- Branding (org logo) — super admin ------------------------------------------
+export interface AdminOrgBranding {
+  org_name: string | null;
+  org_logo_url: string | null;
+  org_phone: string | null;
+}
+
+async function brandingError(res: Response, fallback: string): Promise<string> {
+  try {
+    const d = await res.json();
+    if (typeof d?.detail === "string") return d.detail;
+  } catch {
+    /* non-JSON */
+  }
+  return fallback;
+}
+
+export async function adminOrgBranding(orgId: string): Promise<AdminOrgBranding | null> {
+  const res = await apiFetch(`/branding/orgs/${orgId}`);
+  if (!res.ok) return null; // older backend: no branding endpoints yet
+  return (await res.json()) as AdminOrgBranding;
+}
+
+export async function adminUploadOrgLogo(orgId: string, dataBase64: string, filename: string): Promise<AdminOrgBranding> {
+  const res = await apiFetch(`/branding/orgs/${orgId}/logo`, { method: "PUT", body: JSON.stringify({ data_base64: dataBase64, filename }) });
+  if (!res.ok) throw new Error(await brandingError(res, "Could not save the logo."));
+  return (await res.json()) as AdminOrgBranding;
+}
+
+export async function adminRemoveOrgLogo(orgId: string): Promise<AdminOrgBranding> {
+  const res = await apiFetch(`/branding/orgs/${orgId}/logo`, { method: "DELETE" });
+  if (!res.ok) throw new Error(await brandingError(res, "Could not remove the logo."));
+  return (await res.json()) as AdminOrgBranding;
+}

@@ -12,7 +12,7 @@ import subprocess
 import time
 from datetime import datetime, timezone
 
-from qa_lib import OUT, load_ledger, sb
+from qa_lib import S_SLUG, U_SLUG, OUT, load_ledger, sb
 
 ADB = r"D:\Program Files\Nox\bin\nox_adb.exe"
 SERIAL = "127.0.0.1:62001"
@@ -39,8 +39,9 @@ def main():
     ap.add_argument("--minutes", type=float, default=10)
     ap.add_argument("--tag", default="run")
     ap.add_argument("--kmh", type=float, default=30)
+    ap.add_argument("--route-id", default=None, help="route to drive (default: the ledger's qa_ university route)")
     a = ap.parse_args()
-    route_id = load_ledger()["orgs"]["acme-bus-co"]["route"]["id"]
+    route_id = a.route_id if getattr(a, "route_id", None) else load_ledger()["orgs"][U_SLUG]["route"]["id"]
     coords = sb("GET", f"routes?select=geometry&id=eq.{route_id}")[0]["geometry"]["coordinates"]  # [lng, lat]
     cum = [0.0]
     for p, q in zip(coords, coords[1:]):

@@ -194,7 +194,7 @@ def _render_xlsx(headers: list, rows: list) -> bytes:
     return buf.getvalue()
 
 
-def _render_pdf(headers: list, rows: list, title: str) -> bytes:
+def _render_pdf(headers: list, rows: list, title: str, org_id: Optional[str] = None) -> bytes:
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import A4, landscape
     from reportlab.lib.styles import getSampleStyleSheet
@@ -203,7 +203,9 @@ def _render_pdf(headers: list, rows: list, title: str) -> bytes:
     styles = getSampleStyleSheet()
     buf = io.BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=landscape(A4), title="Attendance Report")
-    story = [Paragraph(title, styles["Title"]), Spacer(1, 12)]
+    import branding
+
+    story = branding.pdf_header(org_id, None, title, styles, width_pt=doc.width) + [Paragraph(title, styles["Title"]), Spacer(1, 12)]
     if not rows:
         story.append(Paragraph("No attendance records for this selection.", styles["Italic"]))
     else:
@@ -263,7 +265,7 @@ def export_attendance(
         title = f"Attendance — {data[0]['student_name'] or 'Student'}"
 
     if fmt == "pdf":
-        content = _render_pdf(headers, table, title)
+        content = _render_pdf(headers, table, title, org_id)
         media = "application/pdf"
         ext = "pdf"
     else:

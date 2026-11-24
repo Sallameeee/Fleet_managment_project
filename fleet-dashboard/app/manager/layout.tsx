@@ -56,6 +56,16 @@ export default function ManagerLayout({ children }: { children: React.ReactNode 
   const [unread, setUnread] = useState(0);
   const [navOpen, setNavOpen] = useState(false); // mobile off-canvas nav
 
+  // Settings → logo upload announces the new logo so the sidebar updates at once.
+  useEffect(() => {
+    function onBrand(e: Event) {
+      const url = (e as CustomEvent<string | null>).detail ?? null;
+      setProfile((p) => (p ? { ...p, org_logo_url: url } : p));
+    }
+    window.addEventListener("routemind:branding", onBrand);
+    return () => window.removeEventListener("routemind:branding", onBrand);
+  }, []);
+
   useEffect(() => {
     setImpersonation(getImpersonation());
   }, []);
@@ -129,7 +139,14 @@ export default function ManagerLayout({ children }: { children: React.ReactNode 
 
   return (
     <div className="flex min-h-screen">
-      <Sidebar title={t("login.managerTitle")} items={items} open={navOpen} onClose={() => setNavOpen(false)} />
+      <Sidebar
+        title={t("login.managerTitle")}
+        items={items}
+        open={navOpen}
+        onClose={() => setNavOpen(false)}
+        orgName={profile?.org_name ?? null}
+        logoUrl={profile?.org_logo_url ?? null}
+      />
       <div className="flex min-w-0 flex-1 flex-col">
         {impersonation && (
           <div className="flex items-center justify-between gap-3 border-b border-amber-500/40 bg-amber-500/10 px-6 py-2 text-sm text-amber-200">

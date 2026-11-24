@@ -8,7 +8,7 @@ import sys
 from datetime import timedelta
 from pathlib import Path
 
-from qa_lib import ROOT, api, iso, load_ledger, save_ledger, sb, utc_now
+from qa_lib import S_SLUG, U_SLUG, ROOT, api, iso, load_ledger, save_ledger, sb, utc_now
 
 sys.path.insert(0, str(ROOT / "fleet-management"))
 import os  # noqa: E402
@@ -17,13 +17,13 @@ os.environ.setdefault("LIFECYCLE_SWEEP", "0")
 import trip_lifecycle  # noqa: E402
 
 led = load_ledger()
-o = led["orgs"]["acme-bus-co"]
+o = led["orgs"][U_SLUG]
 
 
 def main():
-    c, d, _ = api("POST", "/auth/login", body={"login": f"{o['drv2']['username']}@acme-bus-co", "password": o["drv2"]["password"]})
+    c, d, _ = api("POST", "/auth/login", body={"login": f"{o['drv2']['username']}@{U_SLUG}", "password": o["drv2"]["password"]})
     tok = d["access_token"]
-    mt = api("POST", "/auth/login", body={"login": f"{o['manager']['username']}@acme-bus-co", "password": o["manager"]["password"]})[1]["access_token"]
+    mt = api("POST", "/auth/login", body={"login": f"{o['manager']['username']}@{U_SLUG}", "password": o["manager"]["password"]})[1]["access_token"]
     for t in sb("GET", f"trips?select=id&driver_id=eq.{o['drv2']['id']}&status=eq.active"):
         api("POST", f"/trips/{t['id']}/cancel", mt)
     c, d, _ = api("POST", "/trips/start", tok, {"assignment_id": o["asg_drv2"]["id"]})

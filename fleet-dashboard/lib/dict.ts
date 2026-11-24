@@ -768,4 +768,16 @@ export const dict: Record<string, { en: string; ar: string }> = {
   "users.subtitle": { en: "Platform staff who help run the panel", ar: "موظفو المنصّة الذين يساعدون في تشغيل اللوحة" },
   "users.newUser": { en: "New user", ar: "مستخدم جديد" },
   "users.permissions": { en: "Permissions", ar: "الصلاحيات" },
+  // --- branding (org logo) ----------------------------------------------------
+  "brand.title": { en: "Organization logo", ar: "شعار الجهة" },
+  "brand.subtitle": { en: "Shown in the apps, the dashboard, the public tracking page and PDF reports.", ar: "يظهر في التطبيقات ولوحة التحكم وصفحة التتبع العامة وتقارير PDF." },
+  "brand.help": { en: "PNG, JPG or SVG, up to 1 MB. A square logo on a transparent background looks best.", ar: "PNG أو JPG أو SVG حتى ١ ميجابايت. يفضَّل شعار مربع بخلفية شفافة." },
+  "brand.upload": { en: "Upload logo", ar: "رفع الشعار" },
+  "brand.replace": { en: "Replace logo", ar: "استبدال الشعار" },
+  "brand.remove": { en: "Remove", ar: "إزالة" },
+  "brand.saved": { en: "Logo saved.", ar: "تم حفظ الشعار." },
+  "brand.removed": { en: "Logo removed.", ar: "تمت إزالة الشعار." },
+  "brand.failed": { en: "Could not save the logo.", ar: "تعذّر حفظ الشعار." },
+  "brand.tooBig": { en: "The logo must be 1 MB or smaller.", ar: "يجب ألا يزيد حجم الشعار عن ١ ميجابايت." },
+  "brand.badType": { en: "Only PNG, JPG or SVG images are accepted.", ar: "يُقبل فقط PNG أو JPG أو SVG." },
 };

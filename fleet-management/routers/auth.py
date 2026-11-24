@@ -13,6 +13,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
+import branding
 import features as feature_flags
 from auth import get_current_user, require_super_admin
 from database import SUPABASE_URL, supabase
@@ -141,6 +142,7 @@ def login(body: LoginRequest):
             "module": org_module,
             "enabled_features": enabled_features,
             "permissions": profile.get("permissions"),
+            **branding.org_branding(profile.get("org_id")),
         },
         "module": org_module,
         "enabled_features": enabled_features,
@@ -179,7 +181,28 @@ def me(current_user: dict = Depends(get_current_user)):
         "must_change_password": current_user.get("must_change_password", False),
         # Present (and truthy) only when this is an impersonated session.
         "impersonation": current_user.get("impersonation"),
+        # Staff ID details for the app profile card (driver: licence; school
+        # supervisor: national ID). Read directly: get_current_user may not carry them.
+        **_id_details(current_user),
+        # Branding: org display name, logo URL (or null) and transport-office phone.
+        **branding.org_branding(_oid),
     }
+
+
+def _id_details(current_user: dict) -> dict:
+    out = {"license_number": None, "license_expiry_date": None, "national_id": None}
+    uid = current_user.get("id")
+    if not uid or current_user.get("role") in ("passenger", None):
+        return out
+    for cols in ("license_number, license_expiry_date, national_id", "license_number, license_expiry_date"):
+        try:
+            r = supabase.table("profiles").select(cols).eq("id", uid).limit(1).execute().data
+            if r:
+                out.update({k: r[0].get(k) for k in out if k in r[0]})
+            return out
+        except Exception:
+            continue  # national_id arrives with migration 035
+    return out
 
 
 # --- Passenger auth (students on the passenger app) ---------------------------
@@ -240,7 +263,8 @@ def passenger_login(body: PassengerLoginRequest):
         "refresh_token": data.get("refresh_token"),  # for silent renewal (POST /auth/refresh)
         "token_type": data.get("token_type", "bearer"),
         "expires_in": data.get("expires_in"),
-        "user": {"id": profile["id"], "name": profile.get("name"), "role": "passenger", "org_id": profile.get("org_id")},
+        "user": {"id": profile["id"], "name": profile.get("name"), "role": "passenger", "org_id": profile.get("org_id"),
+                 **branding.org_branding(profile.get("org_id"))},
         "module": org_module,
         "enabled_features": enabled_features,
         "must_change_password": bool(profile.get("must_change_password")),

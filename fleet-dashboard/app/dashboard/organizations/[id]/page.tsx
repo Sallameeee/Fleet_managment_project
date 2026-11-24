@@ -10,6 +10,8 @@ import {
 } from "@/lib/api";
 import { useT } from "@/lib/i18n";
 import OrgEditForm from "@/components/OrgEditForm";
+import LogoUploader from "@/components/LogoUploader";
+import { adminOrgBranding, adminRemoveOrgLogo, adminUploadOrgLogo, type AdminOrgBranding } from "@/lib/api";
 import StatusBadge from "@/components/StatusBadge";
 
 function money(n: number): string {
@@ -202,6 +204,9 @@ export default function OrganizationDetailPage() {
         </div>
       </section>
 
+      {/* Branding — the org logo (apps, dashboard, public page, PDFs). */}
+      <AdminBranding orgId={id} />
+
       {/* Edit — shared sectioned, scrollable form (same as the list page). */}
       {editOpen && (
         <OrgEditForm
@@ -223,5 +228,29 @@ function Info({ label, value }: { label: string; value: string }) {
       <div className="text-xs uppercase tracking-wide text-slate-500">{label}</div>
       <div className="mt-0.5 break-words capitalize text-slate-200">{value}</div>
     </div>
+  );
+}
+
+
+function AdminBranding({ orgId }: { orgId: string }) {
+  const { t } = useT();
+  const [b, setB] = useState<AdminOrgBranding | null | undefined>(undefined);
+  useEffect(() => {
+    adminOrgBranding(orgId).then(setB).catch(() => setB(null));
+  }, [orgId]);
+  if (!b) return null; // loading, or an older backend without branding
+  return (
+    <section className="space-y-3 rounded-xl border border-ink-800 bg-ink-900/40 p-5">
+      <div>
+        <h2 className="text-lg font-semibold text-white">{t("brand.title")}</h2>
+        <p className="mt-1 text-sm text-slate-400">{t("brand.subtitle")}</p>
+      </div>
+      <LogoUploader
+        currentUrl={b.org_logo_url}
+        orgName={b.org_name}
+        upload={(data, name) => adminUploadOrgLogo(orgId, data, name)}
+        remove={() => adminRemoveOrgLogo(orgId)}
+      />
+    </section>
   );
 }

@@ -9,9 +9,9 @@ route (4 stops, New Cairo), 2 assignments for today (Cairo), 1 passenger.
 import sys
 from datetime import datetime, timedelta
 
-from qa_lib import CAIRO, api, evidence, load_ledger, mint_impersonation, password, save_ledger, sb
+from qa_lib import S_SLUG, U_SLUG, CAIRO, api, evidence, load_ledger, mint_impersonation, password, save_ledger, sb
 
-ORGS = ["school-test", "acme-bus-co"]
+ORGS = [S_SLUG, U_SLUG]
 # New Cairo, ~550 m between stops (lat, lng)
 STOPS = [("qa_Stop A", 30.0300, 31.4700), ("qa_Stop B", 30.0335, 31.4745),
          ("qa_Stop C", 30.0370, 31.4790), ("qa_Stop D", 30.0405, 31.4835)]
