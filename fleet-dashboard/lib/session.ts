@@ -15,7 +15,7 @@
 
 export type SessionKind = "manager" | "admin";
 export type RefreshOutcome = "refreshed" | "adopted" | "transient" | "dead" | "forbidden" | "none";
-export type SessionState = "ok" | "reauth" | "forbidden";
+export type SessionState = "ok" | "reauth" | "forbidden" | "signedOut";
 
 export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
 
@@ -109,16 +109,24 @@ function emit(kind: SessionKind, state: SessionState): void {
   }
 }
 
-if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
-  // Another tab signed in again (or renewed): this tab's modal can close.
-  window.addEventListener("storage", (e: StorageEvent) => {
-    for (const kind of ["manager", "admin"] as SessionKind[]) {
-      if (e.key === SESSION_KEYS[kind].token && e.newValue) {
-        resetBackoff(kind);
-        emit(kind, "ok");
-      }
+/** What another tab's localStorage change means for this tab (exported for tests). */
+export function onStorageChange(e: Pick<StorageEvent, "key" | "newValue" | "oldValue">): void {
+  for (const kind of ["manager", "admin"] as SessionKind[]) {
+    const mine = e.key === SESSION_KEYS[kind].token || e.key === null; // null = localStorage.clear()
+    if (!mine) continue;
+    if (e.key !== null && e.newValue) {
+      // Another tab signed in again (or renewed): this tab's modal can close.
+      resetBackoff(kind);
+      emit(kind, "ok");
+    } else if (!getSessionToken(kind) && (e.oldValue || e.key === null)) {
+      // Another tab pressed Sign out: follow it instead of showing stale data.
+      emit(kind, "signedOut");
     }
-  });
+  }
+}
+
+if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+  window.addEventListener("storage", onStorageChange);
 }
 
 // --- backoff ------------------------------------------------------------------

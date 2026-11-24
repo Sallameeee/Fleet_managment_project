@@ -4,9 +4,9 @@ accounts only (qa/auth_setup.py). Prints statuses, never tokens.
 Per account (super admin, school owner/manager/supervisor/parent, university
 manager/driver/student):
   * login returns a refresh token;
-  * 5 forced expiries in a row renew silently (an invalid access token gets 401,
+  * 3 forced expiries in a row renew silently (an invalid access token gets 401,
     the refresh answers 200, the new token works);
-  * 8 parallel refreshes of one token (UI + isolate + tabs) all get one pair;
+  * 4 parallel refreshes of one token (UI + isolate + tabs) all get one pair;
   * re-sending a token two rotations old answers 401 code=refresh_token_already_used
     and the session itself stays alive;
   * a bogus token answers 401 with a code.
@@ -30,6 +30,10 @@ from qa_lib import OUT, api, evidence
 LED = json.loads((OUT / "auth_ledger.json").read_text(encoding="utf-8"))
 IDLE = OUT / "auth_idle.json"
 FAILS, LINES = [], []
+# Supabase rate-limits sign-ins (30/5 min) and refreshes (150/5 min) PER IP, and
+# every call reaches it from the backend's one IP: pace the suite so real users
+# never share an exhausted budget with it.
+PAUSE_S = 40
 
 
 def check(name, ok, ev=""):
@@ -72,21 +76,26 @@ def account_suite(a):
     if not rt:
         return
     ok5 = True
-    for _ in range(5):
+    for _ in range(3):
         c1 = me(a, "qa-expired-token")
         c2, d2 = refresh(rt)
         c3 = me(a, d2.get("access_token", ""))
         ok5 &= (c1 == 401 and c2 == 200 and c3 == 200)
         rt = d2.get("refresh_token") or rt
-    check(f"{tag}: 5 forced expiries renew silently", ok5)
-    with cf.ThreadPoolExecutor(8) as ex:
-        res = list(ex.map(lambda _: refresh(rt), range(8)))
+    check(f"{tag}: 3 forced expiries renew silently", ok5)
+    with cf.ThreadPoolExecutor(4) as ex:
+        res = list(ex.map(lambda _: refresh(rt), range(4)))
     new = {fp(r[1].get("refresh_token")) for r in res if r[0] == 200}
-    check(f"{tag}: 8 parallel refreshes of one token", all(r[0] == 200 for r in res) and len(new) == 1,
+    check(f"{tag}: 4 parallel refreshes of one token", all(r[0] == 200 for r in res) and len(new) == 1,
           f"statuses={sorted({r[0] for r in res})} distinct_pairs={len(new)}")
+    if not new:
+        return
     rt = next(r[1]["refresh_token"] for r in res if r[0] == 200)
-    _, b = refresh(rt)
-    _, c = refresh(b["refresh_token"])
+    cb, b = refresh(rt)
+    cc, c = refresh(b.get("refresh_token", ""))
+    if cb != 200 or cc != 200:
+        check(f"{tag}: two rotations in a row", False, f"{cb} {b.get('code') or b.get('detail')} / {cc} {c.get('code') or c.get('detail')}")
+        return
     time.sleep(11)  # past the 10 s reuse interval
     code_old, d_old = refresh(rt)  # two rotations old
     code_new, d_new = refresh(c["refresh_token"])
@@ -145,8 +154,11 @@ def main():
     if "--idle-check" in sys.argv:
         idle_check()
     else:
-        for a in LED["dashboard_accounts"] + LED["app_accounts"]:
+        for i, a in enumerate(LED["dashboard_accounts"] + LED["app_accounts"]):
+            if i:
+                time.sleep(PAUSE_S)
             account_suite(a)
+        time.sleep(PAUSE_S)
         s, u = LED["school"], LED["uni"]
         owner_tok = api("POST", "/auth/login", body={"login": f"qa_as_owner@{s['slug']}", "password": s["owner"]["password"]})[1]["access_token"]
         deactivation_suite("school supervisor 2", f"qa_as_sup2@{s['slug']}", s["sup2"]["password"], s["sup2"]["id"], owner_tok)

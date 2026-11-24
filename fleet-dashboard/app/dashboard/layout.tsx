@@ -99,6 +99,7 @@ export default function DashboardLayout({
       if (kind !== "admin" || !active) return;
       if (state === "reauth") askPassword();
       else if (state === "forbidden") signOut();
+      else if (state === "signedOut") router.replace("/login"); // Sign out pressed in another tab
       else if (state === "ok") {
         setReauth(false);
         setReauthOpen(false);

@@ -248,6 +248,25 @@ async function fakeSuite() {
   const ir = await Promise.all(tabs.map((t) => t.authFetch("manager", "/x")));
   check("impersonation: renewed through the (also renewed) super-admin session", ir.every((x) => x.status === 200) && impSeq === 1, `impersonate calls=${impSeq} admin refreshes=${adm.calls}`);
 
+  // 8b. Cross-tab: Sign out in one tab moves the others to the login page; a
+  // re-login in one tab closes the others' modal. (The browser fires "storage"
+  // in every OTHER tab; here we hand tab 1 the event tab 0's write produces.)
+  resetFake();
+  tabs = await openTabs(2);
+  const ev8 = [];
+  tabs[1].onSessionState((k, s) => ev8.push(`${k}:${s}`));
+  const oldTok = store.get("fleet_manager_token");
+  tabs[0].clearSession("manager");
+  tabs[1].onStorageChange({ key: "fleet_manager_token", oldValue: oldTok, newValue: null });
+  check("cross-tab: Sign out in one tab -> 'signedOut' in the other", ev8.includes("manager:signedOut"), ev8.join(","));
+  ev8.length = 0;
+  tabs[0].storeSession("manager", "MA-x", "MR-x");
+  tabs[1].onStorageChange({ key: "fleet_manager_token", oldValue: null, newValue: "MA-x" });
+  check("cross-tab: sign-in in one tab -> 'ok' in the other (modal closes)", ev8.includes("manager:ok") && !ev8.includes("manager:signedOut"), ev8.join(","));
+  ev8.length = 0;
+  tabs[1].onStorageChange({ key: "fleet_manager_refresh", oldValue: "MR0", newValue: "MR1" });
+  check("cross-tab: a renewal elsewhere is not a sign-out", ev8.length === 0, ev8.join(","));
+
   // 9. fetchMe classification (what the layouts act on).
   resetFake();
   tabs = await openTabs(1);
@@ -288,7 +307,8 @@ async function liveSuite() {
     });
   };
   const ledger = JSON.parse(readFileSync(join(HERE, "out", process.env.QA_AUTH_LEDGER || "auth_ledger.json"), "utf8"));
-  for (const acct of ledger.dashboard_accounts) {
+  for (const [n, acct] of ledger.dashboard_accounts.entries()) {
+    if (n) await sleep(30_000); // Supabase's per-IP auth limits are shared with real users
     store.clear();
     refreshCalls = 0;
     statuses.length = 0;
