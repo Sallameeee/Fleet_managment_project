@@ -1,10 +1,14 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   managerMe,
   managerLogout,
+  managerGetToken,
+  cachedManagerProfile,
+  onSessionState,
+  SessionError,
   canAccess,
   getManagerSlug,
   getImpersonation,
@@ -18,6 +22,7 @@ import Sidebar, { type NavItem } from "@/components/Sidebar";
 import ThemeToggle from "@/components/ThemeToggle";
 import LanguageSwitcher from "@/components/LanguageSwitcher";
 import NotificationBell from "@/components/NotificationBell";
+import ReauthModal, { SessionStrip } from "@/components/ReauthModal";
 
 // Each nav item: href, translation key, required permission, and — for TOGGLEABLE
 // features — a `feature` key. Items with no `feature` are CORE (always shown when
@@ -70,18 +75,78 @@ export default function ManagerLayout({ children }: { children: React.ReactNode 
     setImpersonation(getImpersonation());
   }, []);
 
+  // The session never ends by itself. Network errors and server restarts keep the
+  // (cached) dashboard on screen and retry; a session the server no longer knows
+  // asks for the password in a modal; only a deactivated account signs out.
+  const [conn, setConn] = useState<"ok" | "offline">("ok");
+  const [reauth, setReauth] = useState(false);
+  const [reauthOpen, setReauthOpen] = useState(false);
+  const reload = useRef<() => void>(() => {});
+
   useEffect(() => {
+    if (!managerGetToken()) {
+      router.replace("/org-login"); // never signed in in this browser
+      return;
+    }
     let active = true;
-    managerMe()
-      .then((p) => {
-        if (active) setProfile(p);
-      })
-      .catch(() => {
-        managerLogout();
-        router.replace("/org-login");
-      });
+    let needsReload = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let delay = 2000;
+    const cached = cachedManagerProfile();
+    if (cached) setProfile(cached);
+    const signOut = () => {
+      managerLogout();
+      router.replace("/org-login");
+    };
+    const askPassword = () => {
+      needsReload = true;
+      setReauth(true);
+      setReauthOpen(true);
+    };
+    const load = () => {
+      if (timer) clearTimeout(timer);
+      managerMe()
+        .then((p) => {
+          if (!active) return;
+          setProfile(p);
+          setConn("ok");
+          setReauth(false);
+          setReauthOpen(false);
+          needsReload = false;
+          delay = 2000;
+        })
+        .catch((e: unknown) => {
+          if (!active) return;
+          const reason = e instanceof SessionError ? e.reason : "network";
+          if (reason === "forbidden") return signOut();
+          if (reason === "auth") return askPassword();
+          setConn("offline");
+          timer = setTimeout(load, delay);
+          delay = Math.min(delay * 2, 60000);
+        });
+    };
+    reload.current = () => {
+      delay = 2000;
+      load();
+    };
+    load();
+    const off = onSessionState((kind, state) => {
+      if (kind !== "manager" || !active) return;
+      if (state === "reauth") askPassword();
+      else if (state === "forbidden") signOut();
+      else if (state === "ok") {
+        setReauth(false);
+        setReauthOpen(false);
+        if (needsReload) load(); // signed in again (here or in another tab)
+      }
+    });
+    const onOnline = () => reload.current();
+    window.addEventListener("online", onOnline);
     return () => {
       active = false;
+      off();
+      if (timer) clearTimeout(timer);
+      window.removeEventListener("online", onOnline);
     };
   }, [router]);
 
@@ -102,7 +167,30 @@ export default function ManagerLayout({ children }: { children: React.ReactNode 
     };
   }, [profile, refreshUnread]);
 
-  if (!profile) return null;
+  if (!profile) {
+    // Nothing cached yet (first visit in this browser): still never a sign-out.
+    if (reauth)
+      return (
+        <div className="min-h-screen">
+          <ReauthModal
+            kind="manager"
+            open
+            slug={getManagerSlug()}
+            onDone={() => reload.current()}
+            onLater={() => reload.current()}
+          />
+        </div>
+      );
+    if (conn === "offline")
+      return (
+        <div className="flex min-h-screen items-start justify-center pt-24">
+          <div className="w-full max-w-lg">
+            <SessionStrip state="offline" onRetry={() => reload.current()} />
+          </div>
+        </div>
+      );
+    return null;
+  }
 
   const module = profile.module ?? "university";
   const isSchool = module === "school";
@@ -148,6 +236,33 @@ export default function ManagerLayout({ children }: { children: React.ReactNode 
         logoUrl={profile?.org_logo_url ?? null}
       />
       <div className="flex min-w-0 flex-1 flex-col">
+        {conn === "offline" && <SessionStrip state="offline" onRetry={() => reload.current()} />}
+        {reauth && !impersonation && !reauthOpen && (
+          <SessionStrip state="reauth" onSignIn={() => setReauthOpen(true)} />
+        )}
+        {reauth && impersonation && (
+          <div
+            role="status"
+            className="flex items-center justify-between gap-3 border-b border-amber-500/40 bg-amber-500/10 px-4 py-2 text-sm text-amber-100 md:px-6"
+          >
+            <span>{t("session.impEnded")}</span>
+            <button
+              onClick={exitImpersonation}
+              className="shrink-0 rounded-md border border-amber-500/50 px-3 py-1 font-medium hover:bg-amber-500/20"
+            >
+              {t("session.backToPlatform")}
+            </button>
+          </div>
+        )}
+        <ReauthModal
+          kind="manager"
+          open={reauth && reauthOpen && !impersonation}
+          identity={profile.username ?? null}
+          slug={slug}
+          expectedId={profile.id}
+          onDone={() => reload.current()}
+          onLater={() => setReauthOpen(false)}
+        />
         {impersonation && (
           <div className="flex items-center justify-between gap-3 border-b border-amber-500/40 bg-amber-500/10 px-6 py-2 text-sm text-amber-200">
             <span>

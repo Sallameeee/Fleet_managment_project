@@ -1,12 +1,22 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { fetchSuperAdminMe, logout, canSuper, type SuperAdmin } from "@/lib/api";
+import {
+  fetchSuperAdminMe,
+  logout,
+  canSuper,
+  cachedSuperAdmin,
+  getToken,
+  onSessionState,
+  SessionError,
+  type SuperAdmin,
+} from "@/lib/api";
 import { useT } from "@/lib/i18n";
 import Sidebar, { type NavItem } from "@/components/Sidebar";
 import ThemeToggle from "@/components/ThemeToggle";
 import LanguageSwitcher from "@/components/LanguageSwitcher";
+import ReauthModal, { SessionStrip } from "@/components/ReauthModal";
 
 // Each nav item: href, label translation key, the platform permission needed.
 const ADMIN_NAV: { href: string; key: string; perm: string }[] = [
@@ -29,23 +39,99 @@ export default function DashboardLayout({
   // the Sidebar renders exactly as before (static, always visible).
   const [navOpen, setNavOpen] = useState(false);
 
+  // Server-verified guard for the whole /dashboard area. It never signs out by
+  // itself: offline / 5xx keep the (cached) panel and retry, a session the
+  // server no longer knows asks for the password, only "not a super admin
+  // (any more)" signs out.
+  const [conn, setConn] = useState<"ok" | "offline">("ok");
+  const [reauth, setReauth] = useState(false);
+  const [reauthOpen, setReauthOpen] = useState(false);
+  const reload = useRef<() => void>(() => {});
+
   useEffect(() => {
-    // Server-verified guard for the whole /dashboard area.
+    if (!getToken()) {
+      router.replace("/login"); // never signed in in this browser
+      return;
+    }
     let active = true;
-    fetchSuperAdminMe()
-      .then((me) => {
-        if (active) setAdmin(me);
-      })
-      .catch(() => {
-        logout();
-        router.replace("/login");
-      });
+    let needsReload = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let delay = 2000;
+    const cached = cachedSuperAdmin();
+    if (cached) setAdmin(cached);
+    const signOut = () => {
+      logout();
+      router.replace("/login");
+    };
+    const askPassword = () => {
+      needsReload = true;
+      setReauth(true);
+      setReauthOpen(true);
+    };
+    const load = () => {
+      if (timer) clearTimeout(timer);
+      fetchSuperAdminMe()
+        .then((me) => {
+          if (!active) return;
+          setAdmin(me);
+          setConn("ok");
+          setReauth(false);
+          setReauthOpen(false);
+          needsReload = false;
+          delay = 2000;
+        })
+        .catch((e: unknown) => {
+          if (!active) return;
+          const reason = e instanceof SessionError ? e.reason : "network";
+          if (reason === "forbidden") return signOut();
+          if (reason === "auth") return askPassword();
+          setConn("offline");
+          timer = setTimeout(load, delay);
+          delay = Math.min(delay * 2, 60000);
+        });
+    };
+    reload.current = () => {
+      delay = 2000;
+      load();
+    };
+    load();
+    const off = onSessionState((kind, state) => {
+      if (kind !== "admin" || !active) return;
+      if (state === "reauth") askPassword();
+      else if (state === "forbidden") signOut();
+      else if (state === "ok") {
+        setReauth(false);
+        setReauthOpen(false);
+        if (needsReload) load();
+      }
+    });
+    const onOnline = () => reload.current();
+    window.addEventListener("online", onOnline);
     return () => {
       active = false;
+      off();
+      if (timer) clearTimeout(timer);
+      window.removeEventListener("online", onOnline);
     };
   }, [router]);
 
-  if (!admin) return null;
+  if (!admin) {
+    if (reauth)
+      return (
+        <div className="min-h-screen">
+          <ReauthModal kind="admin" open onDone={() => reload.current()} onLater={() => reload.current()} />
+        </div>
+      );
+    if (conn === "offline")
+      return (
+        <div className="flex min-h-screen items-start justify-center pt-24">
+          <div className="w-full max-w-lg">
+            <SessionStrip state="offline" onRetry={() => reload.current()} />
+          </div>
+        </div>
+      );
+    return null;
+  }
 
   function handleLogout() {
     logout();
@@ -65,6 +151,16 @@ export default function DashboardLayout({
       <Sidebar title={t("login.adminTitle")} items={items} open={navOpen} onClose={() => setNavOpen(false)} />
       {/* min-w-0 lets wide tables scroll inside the page instead of stretching it */}
       <div className="flex min-w-0 flex-1 flex-col">
+        {conn === "offline" && <SessionStrip state="offline" onRetry={() => reload.current()} />}
+        {reauth && !reauthOpen && <SessionStrip state="reauth" onSignIn={() => setReauthOpen(true)} />}
+        <ReauthModal
+          kind="admin"
+          open={reauth && reauthOpen}
+          identity={admin.email}
+          expectedId={admin.id}
+          onDone={() => reload.current()}
+          onLater={() => setReauthOpen(false)}
+        />
         <header className="flex items-center gap-3 border-b border-ink-800 px-4 py-3 text-sm md:px-6">
           {/* Mobile: hamburger to open the off-canvas nav. Hidden at md+. */}
           <button

@@ -1,7 +1,7 @@
 // API client for the FastAPI backend.
 //
-// Token storage: we keep the access token in memory (module variable) AND mirror
-// it to localStorage so a page refresh stays logged in.
+// Token storage: localStorage, shared by every tab and read on every call;
+// renewal lives in lib/session.ts (shared with the org-user dashboard).
 //
 // TRADEOFF: localStorage is readable by any JavaScript on the page, so a
 // successful XSS attack could steal the token. It's the simplest thing that
@@ -9,37 +9,42 @@
 // backend set an HttpOnly, Secure, SameSite cookie (not reachable from JS) and
 // stop storing the token in JS at all — that defeats token theft via XSS.
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
-const TOKEN_KEY = "fleet_admin_token";
+import {
+  API_URL,
+  SESSION_KEYS,
+  authFetch,
+  clearSession,
+  fetchMe,
+  getSessionToken,
+  readKey,
+  storeSession,
+  writeKey,
+} from "./session";
 
-let inMemoryToken: string | null = null;
+export { SessionError, onSessionState } from "./session";
+
+// The last good /auth/super-admin/me answer: a network blip or a server restart
+// keeps the panel on screen instead of bouncing to /login.
+const ADMIN_PROFILE_KEY = "fleet_admin_profile";
 
 export function getToken(): string | null {
-  if (inMemoryToken) return inMemoryToken;
-  if (typeof window !== "undefined") {
-    inMemoryToken = window.localStorage.getItem(TOKEN_KEY);
-  }
-  return inMemoryToken;
+  return getSessionToken("admin");
 }
 
 export function setToken(token: string): void {
-  inMemoryToken = token;
-  if (typeof window !== "undefined") {
-    window.localStorage.setItem(TOKEN_KEY, token);
-  }
+  writeKey(SESSION_KEYS.admin.token, token);
 }
 
 export function clearToken(): void {
-  inMemoryToken = null;
-  if (typeof window !== "undefined") {
-    window.localStorage.removeItem(TOKEN_KEY);
-  }
+  clearSession("admin");
+  writeKey(ADMIN_PROFILE_KEY, null);
 }
 
 export function isAuthenticated(): boolean {
   return getToken() !== null;
 }
 
+/** Sign out: only the Sign out button (or a deactivated account) calls this. */
 export function logout(): void {
   clearToken();
 }
@@ -63,6 +68,7 @@ export function canSuper(
 
 export interface LoginResponse {
   access_token: string;
+  refresh_token?: string; // renews the panel's session silently (lib/session.ts)
   token_type: string;
   expires_in?: number;
   admin: SuperAdmin;
@@ -95,32 +101,34 @@ export async function login(email: string, password: string): Promise<LoginRespo
   }
 
   const data = (await res.json()) as LoginResponse;
-  setToken(data.access_token);
+  storeSession("admin", data.access_token, data.refresh_token);
   return data;
 }
 
-/** fetch() wrapper that attaches the Bearer token to authenticated requests. */
-export async function apiFetch(path: string, options: RequestInit = {}): Promise<Response> {
-  const token = getToken();
-  const headers = new Headers(options.headers);
-  if (token) headers.set("Authorization", `Bearer ${token}`);
-  if (options.body && !headers.has("Content-Type")) {
-    headers.set("Content-Type", "application/json");
-  }
-  return fetch(`${API_URL}${path}`, { ...options, headers });
+/** fetch() with the super admin's Bearer token. A 401 renews silently (shared
+ *  across tabs, see lib/session.ts) and retries once. Never signs out. */
+export function apiFetch(path: string, options: RequestInit = {}): Promise<Response> {
+  return authFetch("admin", path, options);
 }
 
 /**
- * Server-verified guard: confirms the stored token is still a valid super-admin
- * token. Resolves to the admin on success; throws on 401/any failure so callers
- * can clear the token and bounce to /login.
+ * Server-verified guard. Throws a SessionError whose `reason` says what to do:
+ * "forbidden" (not / no longer a super admin) is the only one that signs out;
+ * "auth" asks for the password again; "network" / "server" keep the panel and retry.
  */
 export async function fetchSuperAdminMe(): Promise<SuperAdmin> {
-  const res = await apiFetch("/auth/super-admin/me");
-  if (!res.ok) {
-    throw new Error("Not authorized");
+  const me = await fetchMe<SuperAdmin>("admin", "/auth/super-admin/me");
+  writeKey(ADMIN_PROFILE_KEY, JSON.stringify(me));
+  return me;
+}
+
+/** The last super-admin profile seen in this browser (null if none). */
+export function cachedSuperAdmin(): SuperAdmin | null {
+  try {
+    return JSON.parse(readKey(ADMIN_PROFILE_KEY) || "null") as SuperAdmin | null;
+  } catch {
+    return null;
   }
-  return (await res.json()) as SuperAdmin;
 }
 
 /** Pull a human-readable message out of a failed JSON response. */

@@ -14,6 +14,12 @@ from qa_lib import API, OUT, ROOT, api, load_ledger
 
 FAILS = []
 
+# Number of API paths the deployed backend exposes. Update it whenever endpoints
+# are added or removed: 107 until 2026-11-24, then +5 in 857bd39 (/branding/me,
+# /branding/logo, /branding/orgs/{org_id}, /branding/orgs/{org_id}/logo,
+# /trips/my-schedule).
+EXPECTED_PATHS = 112
+
 
 def check(name, ok, ev, warn=False):
     tag = "PASS" if ok else ("WARN" if warn else "FAIL")
@@ -60,7 +66,7 @@ def main():
           f"running={sw.get('running')} last_sweep_age={None if age is None else round(age)}s last_error_at={sw.get('last_error_at')}")
     code, d, dt = api("GET", "/openapi.json")
     n = len(d.get("paths", {})) if isinstance(d, dict) else 0
-    check("openapi route count", code == 200 and n == 107, f"{code} paths={n} (code: 107)")
+    check("openapi route count", code == 200 and n == EXPECTED_PATHS, f"{code} paths={n} (expected: {EXPECTED_PATHS})")
     code, d, dt = api("GET", "/track/qa_smoke_no_such_token")
     check("DB round-trip via API", code == 404 and dt < 2, f"{code} {d} {dt*1000:.0f} ms")
     code, d, dt = api("GET", "/dashboard/summary")
