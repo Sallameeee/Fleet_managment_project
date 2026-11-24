@@ -98,7 +98,7 @@ def setup():
             o["driver"] = {"id": d.get("id") or d.get("driver", {}).get("id"), "login": f"qa_drv_{sfx}@{o['slug']}", "password": pw}
             led_save(led)
         if "vehicle" not in o:
-            code, d, _ = api("POST", "/vehicles", tok, {"bus_number": f"qa_BUS_{sfx}", "plate_number": f"QA {sfx.upper()} 777", "capacity": 30})
+            code, d, _ = api("POST", "/vehicles", tok, {"bus_number": f"qa_BUSB_{sfx}", "plate_number": f"QA {sfx.upper()} 777", "capacity": 30})
             assert code in (200, 201), (code, d)
             o["vehicle"] = {"id": d.get("id") or d.get("vehicle", {}).get("id")}
             led_save(led)
