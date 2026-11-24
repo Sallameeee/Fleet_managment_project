@@ -6,6 +6,7 @@ Usage: python qa/s8_verify.py <trip_id> <off_utc> <on_utc>
 Ground truth: qa/out/s8_buffer_pings.txt / s8_buffer_heartbeats.txt (snapshot
 of the app's SQLite buffer taken just before reconnecting)."""
 import json
+import os
 import sys
 from datetime import datetime
 
@@ -19,8 +20,9 @@ def ms(s):
 
 def main():
     trip, off, on = sys.argv[1], sys.argv[2], sys.argv[3]
-    buf_p = [ms(x) for x in (OUT / "s8_buffer_pings.txt").read_text().splitlines() if x.strip()]
-    buf_h = [ms(x) for x in (OUT / "s8_buffer_heartbeats.txt").read_text().splitlines() if x.strip()]
+    tag = os.getenv("S8_TAG", "s8")  # buffer snapshot file prefix (s8 = the 1 h test)
+    buf_p = [ms(x) for x in (OUT / f"{tag}_buffer_pings.txt").read_text().splitlines() if x.strip()]
+    buf_h = [ms(x) for x in (OUT / f"{tag}_buffer_heartbeats.txt").read_text().splitlines() if x.strip()]
     rows = []
     off_set = 0
     while True:  # page past PostgREST's 1000-row cap
@@ -56,7 +58,8 @@ def main():
     }
     ok = (summary["missing"] == 0 and summary["duplicates_on_server"] == 0 and summary["ordered"]
           and summary["heartbeats_missing"] == 0 and len(buf_p) > 0)
-    evidence(f"{'PASS' if ok else 'FAIL'} [S8] 1 h fully-offline trip: " + json.dumps(summary, ensure_ascii=False))
+    evidence(f"{'PASS' if ok else 'FAIL'} [{tag.upper()}] fully-offline trip: " + json.dumps(summary, ensure_ascii=False))
+    (OUT / f"{tag}_verify.json").write_text(json.dumps(summary, ensure_ascii=False, indent=1), encoding="utf-8")
     print("S8 RESULT", "PASS" if ok else "FAIL")
 
 

@@ -525,6 +525,17 @@ export const dict: Record<string, { en: string; ar: string }> = {
   "login.signIn": { en: "Sign in", ar: "تسجيل الدخول" },
   "login.authorizedOnly": { en: "Authorized platform operators only.", ar: "لمشغّلي المنصّة المصرّح لهم فقط." },
   "login.orgHint": { en: "Sign in with your organization username.", ar: "سجّل الدخول باسم المستخدم الخاص بمؤسستك." },
+  // --- session (never signs anyone out by itself) -----------------------------
+  "session.reauthTitle": { en: "Sign in again", ar: "سجّل الدخول مرة أخرى" },
+  "session.reauthBody": { en: "Your session ended on the server. Enter your password to continue. This page stays as it is.", ar: "انتهت جلستك على الخادم. أدخل كلمة المرور للمتابعة. ستبقى هذه الصفحة كما هي." },
+  "session.email": { en: "Email", ar: "البريد الإلكتروني" },
+  "session.later": { en: "Later", ar: "لاحقًا" },
+  "session.differentAccount": { en: "That is a different account. Sign out first to switch accounts.", ar: "هذا حساب مختلف. سجّل الخروج أولًا لتبديل الحساب." },
+  "session.expiredStrip": { en: "Your session needs your password.", ar: "جلستك تحتاج إلى كلمة المرور." },
+  "session.offline": { en: "Can't reach the server. You are still signed in; retrying…", ar: "تعذّر الوصول إلى الخادم. ما زلت مسجّل الدخول؛ جارٍ إعادة المحاولة…" },
+  "session.retryNow": { en: "Retry now", ar: "أعد المحاولة الآن" },
+  "session.impEnded": { en: "This organization view has ended. Sign in to the platform again to continue.", ar: "انتهى عرض هذه المؤسسة. سجّل الدخول إلى المنصة مرة أخرى للمتابعة." },
+  "session.backToPlatform": { en: "Back to the platform", ar: "العودة إلى المنصة" },
 
   // --- alerts ---------------------------------------------------------------
   "alerts.subtitle": { en: "Notifications and the rules that drive them", ar: "الإشعارات والقواعد التي تُنشئها" },

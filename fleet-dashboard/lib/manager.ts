@@ -4,45 +4,43 @@
 // the two login flows never clobber each other. Managers authenticate via the
 // existing POST /auth/login with `username@org-slug`.
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
-const TOKEN_KEY = "fleet_manager_token";
-const REFRESH_KEY = "fleet_manager_refresh"; // Supabase refresh token → silent renewal
+import {
+  API_URL,
+  IMPERSONATION_KEY,
+  SESSION_KEYS,
+  authFetch,
+  clearSession,
+  fetchMe,
+  getSessionToken,
+  readKey,
+  storeSession,
+  writeKey,
+} from "./session";
+
+export { SessionError, onSessionState } from "./session";
+
 const SLUG_KEY = "fleet_manager_slug";
-const IMP_KEY = "fleet_manager_impersonation";
+const IMP_KEY = IMPERSONATION_KEY;
+// The last good /auth/me answer, so a network blip or a server restart never
+// blanks the dashboard or bounces anyone to the login page.
+const PROFILE_KEY = "fleet_manager_profile";
 
-let inMemoryToken: string | null = null;
-
+/** The current access token. Read from storage every time: another tab may
+ *  have renewed it. */
 export function managerGetToken(): string | null {
-  if (inMemoryToken) return inMemoryToken;
-  if (typeof window !== "undefined") {
-    inMemoryToken = window.localStorage.getItem(TOKEN_KEY);
-  }
-  return inMemoryToken;
+  return getSessionToken("manager");
 }
 
 export function managerSetToken(token: string): void {
-  inMemoryToken = token;
-  if (typeof window !== "undefined") window.localStorage.setItem(TOKEN_KEY, token);
+  writeKey(SESSION_KEYS.manager.token, token);
 }
 
-function managerGetRefresh(): string | null {
-  if (typeof window === "undefined") return null;
-  return window.localStorage.getItem(REFRESH_KEY);
-}
-
-function managerSetRefresh(token: string | null | undefined): void {
-  if (typeof window === "undefined") return;
-  if (token) window.localStorage.setItem(REFRESH_KEY, token);
-}
-
+/** Sign out (the Sign out button, or a deactivated account). Nothing else calls it. */
 export function managerClearToken(): void {
-  inMemoryToken = null;
-  if (typeof window !== "undefined") {
-    window.localStorage.removeItem(TOKEN_KEY);
-    window.localStorage.removeItem(REFRESH_KEY);
-    window.localStorage.removeItem(SLUG_KEY);
-    window.localStorage.removeItem(IMP_KEY);
-  }
+  clearSession("manager");
+  writeKey(SLUG_KEY, null);
+  writeKey(IMP_KEY, null);
+  writeKey(PROFILE_KEY, null);
 }
 
 export interface Impersonation {
@@ -55,16 +53,18 @@ export interface Impersonation {
 
 /** Start an impersonated manager session from a super-admin-issued token. */
 export function startImpersonation(token: string, info: Impersonation): void {
-  managerSetToken(token);
-  if (typeof window !== "undefined") {
-    window.localStorage.setItem(SLUG_KEY, info.org_slug);
-    window.localStorage.setItem(IMP_KEY, JSON.stringify(info));
-  }
+  // No refresh token: an impersonated view renews through the super admin's own
+  // session (lib/session.ts). Drop any org user's refresh token left in this
+  // browser, so it can never renew the wrong account.
+  writeKey(SESSION_KEYS.manager.refresh, null);
+  writeKey(PROFILE_KEY, null);
+  storeSession("manager", token, null);
+  writeKey(SLUG_KEY, info.org_slug);
+  writeKey(IMP_KEY, JSON.stringify(info));
 }
 
 export function getImpersonation(): Impersonation | null {
-  if (typeof window === "undefined") return null;
-  const raw = window.localStorage.getItem(IMP_KEY);
+  const raw = readKey(IMP_KEY);
   try {
     return raw ? (JSON.parse(raw) as Impersonation) : null;
   } catch {
@@ -77,8 +77,7 @@ export function managerLogout(): void {
 }
 
 export function getManagerSlug(): string | null {
-  if (typeof window !== "undefined") return window.localStorage.getItem(SLUG_KEY);
-  return null;
+  return readKey(SLUG_KEY);
 }
 
 export type Permissions = Record<string, boolean>;
@@ -135,59 +134,16 @@ export async function managerLogin(username: string, slug: string, password: str
   });
   if (!res.ok) throw new Error(await extractError(res, "Login failed. Check your credentials."));
   const data = (await res.json()) as LoginResponse;
-  managerSetToken(data.access_token);
-  managerSetRefresh(data.refresh_token);
-  if (typeof window !== "undefined") window.localStorage.setItem(SLUG_KEY, cleanSlug);
+  writeKey(IMP_KEY, null); // a real sign-in ends any impersonated view
+  storeSession("manager", data.access_token, data.refresh_token);
+  writeKey(SLUG_KEY, cleanSlug);
   return data.user;
 }
 
-// Silent renewal: when the short-lived access token expires, exchange the refresh
-// token for a fresh one instead of bouncing the manager to the login screen.
-// SINGLE-FLIGHT so concurrent 401s share one refresh (Supabase rotates the refresh
-// token, so we must not run two exchanges at once). Returns true on success.
-let refreshInFlight: Promise<boolean> | null = null;
-
-async function managerRefresh(): Promise<boolean> {
-  const rt = managerGetRefresh();
-  if (!rt) return false; // impersonation / legacy session — nothing to renew
-  refreshInFlight ??= (async () => {
-    try {
-      const res = await fetch(`${API_URL}/auth/refresh`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ refresh_token: managerGetRefresh() }),
-      });
-      if (!res.ok) return false; // 401/403/503 → keep the session, let the caller decide
-      const data = (await res.json()) as { access_token?: string; refresh_token?: string };
-      if (!data.access_token) return false;
-      managerSetToken(data.access_token);
-      managerSetRefresh(data.refresh_token); // store the ROTATED token
-      return true;
-    } catch {
-      return false; // network blip — keep the session, try again later
-    } finally {
-      refreshInFlight = null;
-    }
-  })();
-  return refreshInFlight;
-}
-
-/** fetch() wrapper that attaches the MANAGER Bearer token. On a 401 (expired
- *  token) it silently renews via the refresh token and retries ONCE, so the
- *  manager is never dropped to the login screen just because the token aged out. */
-export async function managerFetch(path: string, options: RequestInit = {}): Promise<Response> {
-  const send = () => {
-    const headers = new Headers(options.headers);
-    const token = managerGetToken();
-    if (token) headers.set("Authorization", `Bearer ${token}`);
-    if (options.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
-    return fetch(`${API_URL}${path}`, { ...options, headers });
-  };
-  let res = await send();
-  if (res.status === 401 && (await managerRefresh())) {
-    res = await send();
-  }
-  return res;
+/** fetch() with the MANAGER Bearer token. A 401 renews silently (shared with
+ *  every other tab, see lib/session.ts) and retries once. Never signs out. */
+export function managerFetch(path: string, options: RequestInit = {}): Promise<Response> {
+  return authFetch("manager", path, options);
 }
 
 export interface OrgBranding {
@@ -209,11 +165,22 @@ export async function removeMyLogo(): Promise<OrgBranding> {
   return (await res.json()) as OrgBranding;
 }
 
-/** Server-verified guard: GET /auth/me. Throws on 401 so callers can redirect. */
+/** GET /auth/me. Throws a SessionError whose `reason` says what to do:
+ *  "forbidden" (deactivated) is the only one that may sign out; "auth" asks for
+ *  the password again; "network" / "server" keep the cached profile and retry. */
 export async function managerMe(): Promise<ManagerProfile> {
-  const res = await managerFetch("/auth/me");
-  if (!res.ok) throw new Error("Not authorized");
-  return (await res.json()) as ManagerProfile;
+  const p = await fetchMe<ManagerProfile>("manager", "/auth/me");
+  writeKey(PROFILE_KEY, JSON.stringify(p));
+  return p;
+}
+
+/** The last profile /auth/me returned in this browser (null if none). */
+export function cachedManagerProfile(): ManagerProfile | null {
+  try {
+    return JSON.parse(readKey(PROFILE_KEY) || "null") as ManagerProfile | null;
+  } catch {
+    return null;
+  }
 }
 
 /**

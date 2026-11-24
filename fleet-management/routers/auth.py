@@ -11,12 +11,13 @@ import os
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 import branding
 import features as feature_flags
 from auth import get_current_user, require_super_admin
-from database import SUPABASE_URL, supabase
+from database import SUPABASE_URL, retry_transient, supabase
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -27,6 +28,13 @@ INVALID_CREDENTIALS = "Invalid username or password"
 # Super-admin login: identical message for bad password AND not-a-super-admin,
 # so the panel never reveals that an account exists or is merely non-admin.
 INVALID_ADMIN_CREDENTIALS = "Invalid email or password"
+AUTH_UNAVAILABLE = "Authentication service is temporarily unavailable. Please try again."
+
+
+def _upstream_down(resp) -> bool:
+    """Supabase Auth answered 5xx or rate-limited us. That says nothing about the
+    user's password or session, so it must never surface as a 401."""
+    return resp.status_code >= 500 or resp.status_code == 429
 
 
 class LoginRequest(BaseModel):
@@ -106,6 +114,8 @@ def login(body: LoginRequest):
             detail="Authentication service is temporarily unavailable. Please try again.",
         )
 
+    if _upstream_down(resp):
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, AUTH_UNAVAILABLE)
     if resp.status_code != 200:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, INVALID_CREDENTIALS)
 
@@ -230,6 +240,8 @@ def passenger_login(body: PassengerLoginRequest):
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Authentication service is temporarily unavailable. Please try again.",
         )
+    if _upstream_down(resp):
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, AUTH_UNAVAILABLE)
     if resp.status_code != 200:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, INVALID_CREDENTIALS)
 
@@ -287,42 +299,99 @@ def refresh_token(body: RefreshRequest):
     token and invalidates the one just used, so the client MUST store the returned
     refresh token. A blocked account is cut off here too (403) so a deactivated
     user can't keep renewing.
+
+    Every answer tells the client exactly what to do, so nothing transient can
+    ever end a session:
+      200  new tokens. Store the NEW refresh token before using the access token.
+      401  {"code": ...}: this refresh token cannot be used.
+             refresh_token_already_used: another holder of the same session (the
+               app's other isolate, another browser tab) rotated it first. Re-read
+               the stored token and retry; never sign out.
+             anything else (refresh_token_not_found, session_not_found, ...): the
+               session is gone. Ask for the password again; keep all local data.
+      403  the account is deactivated: the one case a client signs out.
+      503  Supabase unreachable, 5xx or rate-limited: keep the session, retry later.
     """
     try:
-        resp = httpx.post(
-            f"{SUPABASE_URL}/auth/v1/token",
-            params={"grant_type": "refresh_token"},
-            headers={"apikey": SUPABASE_ANON_KEY, "Content-Type": "application/json"},
-            json={"refresh_token": body.refresh_token},
-            timeout=15,
+        # Safe to retry: re-sending a token whose rotation answer got lost returns
+        # the session's current token (Supabase accepts the active token's parent).
+        resp = retry_transient(
+            lambda: httpx.post(
+                f"{SUPABASE_URL}/auth/v1/token",
+                params={"grant_type": "refresh_token"},
+                headers={"apikey": SUPABASE_ANON_KEY, "Content-Type": "application/json"},
+                json={"refresh_token": body.refresh_token},
+                timeout=httpx.Timeout(9.0, connect=5.0),
+            ),
+            tries=2,
         )
     except Exception:
-        # Network/transient problem talking to Supabase — NOT an invalid token.
-        # 503 tells the client to keep its session and try again later.
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Authentication service is temporarily unavailable. Please try again.",
-        )
+        return _refresh_unavailable()
+    if _upstream_down(resp):
+        return _refresh_unavailable("auth_rate_limited" if resp.status_code == 429 else "auth_unavailable")
     if resp.status_code != 200:
-        # The refresh token is genuinely invalid/expired.
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Could not refresh session.")
-
-    data = resp.json()
+        return JSONResponse(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            content={"detail": "Could not refresh session.", "code": _gotrue_code(resp) or "invalid_refresh_token"},
+        )
+    try:
+        data = resp.json()
+    except Exception:
+        return _refresh_unavailable()
     uid = (data.get("user") or {}).get("id")
     # Cut off a deactivated account at refresh time (so it can't renew forever).
-    if uid:
-        prof = supabase.table("profiles").select("is_active").eq("id", uid).limit(1).execute().data
-        if prof and prof[0].get("is_active") is False:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="This account has been deactivated. Contact your administrator.",
-            )
+    if uid and _account_deactivated(uid):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This account has been deactivated. Contact your administrator.",
+        )
     return {
         "access_token": data.get("access_token"),
         "refresh_token": data.get("refresh_token"),
         "token_type": data.get("token_type", "bearer"),
         "expires_in": data.get("expires_in"),
+        "expires_at": data.get("expires_at"),
     }
+
+
+def _refresh_unavailable(code: str = "auth_unavailable") -> JSONResponse:
+    return JSONResponse(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        content={"detail": AUTH_UNAVAILABLE, "code": code},
+        headers={"Retry-After": "5"},
+    )
+
+
+def _gotrue_code(resp) -> str:
+    """Supabase Auth's machine-readable error code, e.g. refresh_token_already_used."""
+    try:
+        b = resp.json()
+    except Exception:
+        return ""
+    if not isinstance(b, dict):
+        return ""
+    code = b.get("error_code")
+    if isinstance(code, str) and code:
+        return code
+    # Older Auth versions: {"error": "invalid_grant", "error_description": "Invalid Refresh Token: Already Used"}
+    if "already used" in str(b.get("error_description") or b.get("msg") or "").lower():
+        return "refresh_token_already_used"
+    err = b.get("error")
+    return err if isinstance(err, str) else ""
+
+
+def _account_deactivated(uid: str) -> bool:
+    """True only when the account is KNOWN to be deactivated (org user or super
+    admin). A lookup failure answers False: Supabase has already rotated the token,
+    so the new pair must reach the client, and every API call re-checks is_active."""
+    try:
+        prof = retry_transient(lambda: supabase.table("profiles").select("is_active").eq("id", uid).limit(1).execute().data)
+        if prof:
+            return prof[0].get("is_active") is False
+        sa = retry_transient(lambda: supabase.table("super_admins").select("is_active").eq("id", uid).limit(1).execute().data)
+        return bool(sa) and sa[0].get("is_active") is False
+    except Exception:
+        return False
 
 
 class ChangePasswordRequest(BaseModel):
@@ -377,6 +446,8 @@ def super_admin_login(body: SuperAdminLoginRequest):
             detail="Authentication service is temporarily unavailable. Please try again.",
         )
 
+    if _upstream_down(resp):
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, AUTH_UNAVAILABLE)
     if resp.status_code != 200:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, INVALID_ADMIN_CREDENTIALS)
 
@@ -403,6 +474,9 @@ def super_admin_login(body: SuperAdminLoginRequest):
     admin = sa.data[0]
     return {
         "access_token": data.get("access_token"),
+        # Lets the panel renew silently via POST /auth/refresh. Without it every
+        # super-admin session ended when the 1-hour access token expired.
+        "refresh_token": data.get("refresh_token"),
         "token_type": data.get("token_type", "bearer"),
         "expires_in": data.get("expires_in"),
         "admin": {"id": admin["id"], "name": admin["name"], "email": admin["email"]},
