@@ -120,6 +120,28 @@ did, and "OFFLINE" instead of "online, no GPS".
 - Mapbox (existing token): towns OK (المحلة الكبرى), POIs poor (MSA University,
   Mall of Arabia, Sadat metro, a gas station → nothing / wrong). Not switched.
 
+## Verification (2026-11-28)
+
+- `python -m unittest discover -s tests` (fleet-management): 62 pass — GPS filter,
+  stop progression, live state, end-to-end pipeline, pre-048 deploy-order safety,
+  vector freshness. `dart run test/vectors_test.dart` (shared/dart): 16/16.
+- Dashboard: `tsc` clean, `next build` OK. Browser check via `qa/debug_view_server.py`
+  (in-memory backend): Trip debug for the 24 Nov replay + a 117 km synthetic run,
+  Full View amber "Online — no GPS fix", 375 px no horizontal scroll.
+- No production writes were made (all reads were GET); nothing to clean up.
+- Drive scan: no driver-app source / fleet APK on G: (APKs found are the cairoWay
+  maps app). D:/C: were checked for `pubspec.yaml` earlier: none is the driver app.
+
+## Blocked / not done
+
+- Driver app changes + release APK + emulator scenarios (screen lock, swipe, offline):
+  need the app repo (`com.fleet.fleet_driver_app`). Contract: docs/driver-app-tracking-contract.md.
+- NoxPlayer not installed (Android emulator AVD `Pixel_4` is available instead).
+- Railway CLI not installed → no Railway request logs for 24 Nov.
+- Migration 048 written, NOT applied anywhere (no prod migrations without OK);
+  its RLS policy is therefore unverified on real Postgres.
+- Google Places: enable billing on the key's GCP project (owner action).
+
 ## Next
 
-1. Part G report + deploy plan. 2. Driver app: blocked on source (see contract doc).
+Owner review → PR to main → apply 048 → merge → verify (see final report).
