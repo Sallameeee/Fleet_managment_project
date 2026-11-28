@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import mapboxgl from "mapbox-gl";
 import {
+  cachedManagerProfile,
+  canAccess,
   getHistory,
   listDrivers,
   listVehicles,
@@ -123,6 +125,10 @@ export default function ManagerHistoryPage() {
   }, [kind, subjectId, from, to, toast, t]);
 
   const selected = useMemo(() => trips.find((x) => x.trip_id === selectedId) ?? null, [trips, selectedId]);
+  const isAdmin = useMemo(() => {
+    const p = cachedManagerProfile();
+    return !!p && canAccess(p, "manage_settings");
+  }, []);
   selectedRef.current = selected;
 
   // ping timestamps for the selected trip
@@ -425,6 +431,13 @@ export default function ManagerHistoryPage() {
                 </p>
               )}
             </div>
+          )}
+
+          {/* Admins: open this trip's decision log (why no path / OFFLINE / wrong stop). */}
+          {selected && isAdmin && (
+            <a href={`/manager/trip-debug?trip=${selected.trip_id}`} className="block text-xs text-sky-400 hover:underline">
+              {t("nav.tripDebug")} →
+            </a>
           )}
 
           {/* School trip log — derived pickup / school-arrival / home-arrival */}
