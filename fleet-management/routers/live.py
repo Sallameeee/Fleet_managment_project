@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends
 from auth import require_permission
 import gps_filter
 from database import supabase
+import live_status
 from live_logic import ONLINE_WINDOW, driver_live_positions
 
 router = APIRouter(prefix="/live", tags=["live"])
@@ -62,6 +63,8 @@ def live_drivers(current_user: dict = Depends(require_permission("view_tracking"
         }
 
     cutoff = datetime.now(timezone.utc) - ONLINE_WINDOW
+    # Shared live-state rule (live_status): online = app alive on the trip.
+    online_ids = live_status.online_driver_ids(supabase, [t["id"] for t in active])
     out = []
     seen: set = set()
     for t in active:
@@ -75,15 +78,10 @@ def live_drivers(current_user: dict = Depends(require_permission("view_tracking"
         lp = [_pos] if _pos else []
 
         position = None
-        online = False
         if lp:
             p = lp[0]
             position = {"lat": p["lat"], "lng": p["lng"], "recorded_at": p["recorded_at"]}
-            try:
-                rec = datetime.fromisoformat(str(p["recorded_at"]).replace("Z", "+00:00"))
-                online = rec >= cutoff
-            except Exception:
-                online = False
+        online, gps_fresh, live_state = live_status.state_from(did in online_ids, position)
 
         out.append(
             {
@@ -93,6 +91,8 @@ def live_drivers(current_user: dict = Depends(require_permission("view_tracking"
                 "route_name": routes.get(t.get("route_id")),
                 "position": position,
                 "online": online,
+                "live_state": live_state,
+                "gps_fresh": gps_fresh,
             }
         )
 

@@ -19,6 +19,7 @@ import trip_lifecycle as lifecycle
 from capacity_logic import earliest_request_date, read_cutoff, require_school_org, require_university_org
 import gps_filter
 from database import supabase
+import live_status
 from features import require_feature
 from live_logic import LOCAL_TZ, driver_live_positions, pick_current_assignment
 
@@ -399,6 +400,8 @@ def passenger_live(current_user: dict = Depends(require_role("passenger"))):
         }
 
     cutoff = datetime.now(timezone.utc) - ONLINE_WINDOW
+    # Shared live-state rule (live_status): online = app alive on the trip.
+    online_ids = live_status.online_driver_ids(supabase, [t["id"] for t in active])
     out = []
     seen = set()
     for t in active:
@@ -410,15 +413,10 @@ def passenger_live(current_user: dict = Depends(require_role("passenger"))):
         _pos = gps_filter.latest_position(supabase, t["id"])
         lp = [_pos] if _pos else []
         position = None
-        online = False
         if lp:
             p = lp[0]
             position = {"lat": p["lat"], "lng": p["lng"], "recorded_at": p["recorded_at"]}
-            try:
-                rec = datetime.fromisoformat(str(p["recorded_at"]).replace("Z", "+00:00"))
-                online = rec >= cutoff
-            except Exception:
-                online = False
+        online, gps_fresh, live_state = live_status.state_from(did in online_ids, position)
         out.append(
             {
                 "driver_id": did,
@@ -426,6 +424,8 @@ def passenger_live(current_user: dict = Depends(require_role("passenger"))):
                 "vehicle_bus_number": buses.get(t.get("vehicle_id")),
                 "position": position,
                 "online": online,
+                "live_state": live_state,
+                "gps_fresh": gps_fresh,
             }
         )
     return {"route_id": route_id, "count": len(out), "drivers": out}

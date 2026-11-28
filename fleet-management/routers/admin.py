@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 
 from auth import require_super_admin, require_super_permission
 from database import supabase
+import live_status
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -117,17 +118,8 @@ def all_drivers(_admin: dict = Depends(require_super_admin)):
     # ONLINE = a ping in the last 2 minutes. Efficiency: we DON'T scan the whole
     # pings table — we restrict to the (few) active trips' ids AND recorded_at >=
     # cutoff, so PostgREST filters on the indexed trip_id + timestamp only.
-    online_drivers: set = set()
-    if active_trip_ids:
-        cutoff = (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat()
-        recent = (
-            supabase.table("location_pings")
-            .select("driver_id")
-            .in_("trip_id", active_trip_ids)
-            .gte("recorded_at", cutoff)
-            .execute()
-        ).data
-        online_drivers = {p["driver_id"] for p in recent}
+    # Shared live-state rule (live_status): app alive on an active trip.
+    online_drivers = live_status.online_driver_ids(supabase, active_trip_ids)
 
     out = []
     for d in drivers:

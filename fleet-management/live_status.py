@@ -110,6 +110,44 @@ def trip_cols(has_lifecycle: bool, has_fix_col: bool) -> str:
     return ", ".join(cols)
 
 
+def state_from(online: bool, position: Optional[dict], *, now: Optional[datetime] = None) -> tuple:
+    """(online, gps_fresh, live_state) from "app alive" + the newest accepted fix."""
+    now = now or datetime.now(timezone.utc)
+    fix = _dt(position.get("recorded_at")) if position else None
+    gps_fresh = bool(online and fix and (now - fix) <= FIX_FRESH)
+    return bool(online), gps_fresh, (OFFLINE if not online else ONLINE if gps_fresh else ONLINE_NO_GPS)
+
+
+def online_driver_ids(supabase, trip_ids: list, *, now: Optional[datetime] = None) -> set:
+    """Driver ids whose ACTIVE trip (among `trip_ids`) is online (online or
+    online_no_gps). Two bounded queries: the trips' signal columns, and the
+    recent pings of those trips only (fallback for the fix time before 048)."""
+    import trip_lifecycle as lifecycle
+    if not trip_ids:
+        return set()
+    now = now or datetime.now(timezone.utc)
+    cols = "id, driver_id, status"
+    if lifecycle.has_col("trips", "last_signal_at"):
+        cols += ", last_signal_at, last_heartbeat_at"
+    has_fix = lifecycle.has_col("trips", "last_fix_at")
+    if has_fix:
+        cols += ", last_fix_at"
+    trips = supabase.table("trips").select(cols).in_("id", list(trip_ids)).execute().data or []
+    recent_fix: dict = {}
+    if not has_fix:
+        cutoff = (now - SIGNAL_FRESH).isoformat()
+        for p in (supabase.table("location_pings").select("trip_id, recorded_at")
+                  .in_("trip_id", list(trip_ids)).gte("recorded_at", cutoff).execute().data or []):
+            if p["trip_id"] not in recent_fix or p["recorded_at"] > recent_fix[p["trip_id"]]:
+                recent_fix[p["trip_id"]] = p["recorded_at"]
+    out = set()
+    for t in trips:
+        st = for_trip(t, now=now, last_fix_at=None if has_fix else recent_fix.get(t["id"]))
+        if st["online"]:
+            out.add(t["driver_id"])
+    return out
+
+
 def states_for_trips(supabase, trips: list, *, now: Optional[datetime] = None) -> dict:
     """{trip_id: compute(...)} for a list of ACTIVE trip rows. Uses
     trips.last_fix_at when present; otherwise loads each trip's newest accepted

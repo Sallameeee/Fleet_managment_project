@@ -11,10 +11,11 @@ from datetime import datetime, time, timedelta, timezone
 from typing import Optional
 
 import gps_filter
+import live_status
 import trip_lifecycle as lifecycle
 from database import supabase
 
-ONLINE_WINDOW = timedelta(minutes=2)
+ONLINE_WINDOW = timedelta(minutes=2)  # kept for importers; the rule lives in live_status
 LAST_KNOWN_LOOKBACK = timedelta(hours=24)
 from capacity_logic import LOCAL_TZ  # single DST-aware Africa/Cairo zone
 
@@ -55,7 +56,7 @@ def driver_live_positions(org_id: str) -> list:
 
     _cols = "id, driver_id, vehicle_id, route_id, started_at, ended_at"
     if lifecycle.has_col("trips", "conn_lost_at"):  # trip-lifecycle signals (046)
-        _cols += ", conn_lost_at, last_battery, last_net_state, end_reason"
+        _cols += ", conn_lost_at, last_battery, last_net_state, end_reason, last_signal_at, last_heartbeat_at"
     active = (
         supabase.table("trips")
         .select(_cols)
@@ -128,15 +129,15 @@ def driver_live_positions(org_id: str) -> list:
         _pos = gps_filter.latest_position(supabase, tr["id"])
         lp = [_pos] if _pos else []
         position = None
-        online = False
         if lp:
             p = lp[0]
             position = {"lat": p["lat"], "lng": p["lng"], "recorded_at": p["recorded_at"]}
-            try:
-                rec = datetime.fromisoformat(str(p["recorded_at"]).replace("Z", "+00:00"))
-                online = on_trip and rec >= cutoff_online
-            except Exception:
-                online = False
+        # ONE rule (live_status): online = app alive (heartbeat / any signal),
+        # gps_fresh = a recent ACCEPTED fix. A phone that is online but whose
+        # fixes are not arriving is "online_no_gps", never "offline".
+        live = live_status.for_trip({**tr, "status": "active" if on_trip else "completed"}, now=now,
+                                    last_fix_at=position["recorded_at"] if position else None)
+        online = bool(on_trip and live["online"])
 
         c = chosen[did]
         out.append(
@@ -151,6 +152,9 @@ def driver_live_positions(org_id: str) -> list:
                 "assignment_count": c.get("count", 0),
                 "position": position,
                 "online": online,
+                "live_state": live["state"] if on_trip else "offline",
+                "gps_fresh": bool(on_trip and live["gps_fresh"]),
+                "live_reason": live["reason"] if on_trip else None,
                 "on_trip": on_trip,
                 "last_ended_at": tr.get("ended_at") if not on_trip else None,
                 # Trip-lifecycle signals (migration 046; None before it).
