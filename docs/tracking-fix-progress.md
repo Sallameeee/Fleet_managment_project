@@ -89,8 +89,23 @@ gate and a non-encodable/poison row at the buffer head are the leading candidate
 The server and dashboard turned it into a silent failure: no record of what the app
 did, and "OFFLINE" instead of "online, no GPS".
 
+## Done so far (commits on fix/real-world-tracking)
+
+- 048 migration (`trip_events`, RLS staff-read own org, `purge_trip_events`, trips
+  last_fix_at / live_state / progress_state, pings.accuracy, stop_visits passed/closest_m).
+- `trip_events.py` (bounded, scrubbed, best-effort), `live_status.py` (one online rule),
+  `stop_progress.py` (shared progression), `progress_runtime.py` (state + visits + events),
+  `tracking_rejects.py` (422 logging), `routers/trip_debug.py` (admin API + export).
+- Ingest/heartbeat/app-state/lifecycle/sweeper all write the decision log;
+  POST /trips/{id}/events (app log), GET /trips/{id}/progress.
+- All 6 "online" readers use live_status (online / online_no_gps / offline).
+- Dashboard: /manager/trip-debug, Full View 3 states, History link.
+- Tests: `fleet-management/tests` — 55 pass (`python -m unittest discover -s tests`),
+  incl. an end-to-end pipeline test via the real FastAPI app on an in-memory DB.
+  CI runs them in the image.
+
 ## Next
 
-1. Part B migration 048 `trip_events` + server logging + app-event ingest endpoint.
-2. Online/offline states in live_logic (online / online_no_gps / offline).
-3. Shared stop-progression module + replay harness.
+1. qa/replay_real_trips.py — replay real fixes (read-only) through the pipeline.
+2. Dart port (shared/dart) of stop_progress + GPS gate with shared golden vectors.
+3. Part E maps key diagnosis. 4. Report + deploy plan (Part G).

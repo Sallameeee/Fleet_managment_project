@@ -39,6 +39,10 @@ THE RULE
     (skipped -> passed -> visited: doubling back, a stop passed twice).
   * The last stop is never skipped by movement (only by reaching it, or at the
     trip end), and stops left at the end are SKIPPED ("trip ended before X").
+  * Near-stop wait: a bus that never entered the radius but stood still for
+    >= near_dwell_s within near_radius_m of the stop is VISITED ("arrived near X:
+    waited 4 min ~170 m from the stop pin") — the pin is off, not the bus. Seen
+    on the real 6th of October trip (MSA University, 26 slow fixes at 174 m).
 """
 
 from __future__ import annotations
@@ -62,6 +66,13 @@ DEFAULTS = {
     "max_interp_gap_s": 60.0,
     "road_factor": 1.25,
     "min_eta_speed_mps": 5.0,
+    # Stop pin a bit off the real stopping place (campus gates, a stop drawn on
+    # the wrong side of a divided road): the bus WAITED nearby without ever
+    # entering the arrival radius. Applied only when the stop is decided, so it
+    # can never move the pointer early.
+    "near_radius_m": 300.0,
+    "near_dwell_s": 60.0,
+    "near_moving_mps": 3.0,
 }
 
 
@@ -125,7 +136,8 @@ def new_state() -> dict:
 def _rec(state: dict, stop: dict) -> dict:
     return state["stops"].setdefault(stop["id"], {
         "status": None, "closest_m": None, "closest_at": None, "entered_at": None,
-        "last_inside_at": None, "min_speed": None, "arrived": False, "decided_at": None})
+        "last_inside_at": None, "min_speed": None, "arrived": False, "decided_at": None,
+        "near_since": None, "near_dwell_s": 0.0, "near_m": None})
 
 
 def _name(stop: dict) -> str:
@@ -165,6 +177,15 @@ def _close_stop(state: dict, stops: list, i: int, at: datetime, cfg: dict, why: 
                              arrival=rec.get("entered_at"), departure=rec.get("last_inside_at"),
                              dwell_s=_dwell(rec)))
         out.append(_visit(s, "visited", rec, rec.get("entered_at"), rec.get("last_inside_at")))
+    elif (closest is None or closest > cfg["arrive_radius_m"]) and (rec.get("near_dwell_s") or 0) >= cfg["near_dwell_s"]:
+        rec["status"] = "visited"
+        mins = rec["near_dwell_s"] / 60.0
+        out.append(_decision("stop_arrived", s, at,
+                             f"arrived near {_name(s)}: waited {mins:.1f} min about {round(rec['near_m'] or closest or 0)} m "
+                             f"from the stop pin (pin may be misplaced)",
+                             near=True, near_dwell_s=_r1(rec["near_dwell_s"]), near_m=_r1(rec.get("near_m")),
+                             closest_m=_r1(closest), reason=why))
+        out.append(_visit(s, "visited", rec, rec.get("closest_at") or _iso(at)))
     elif closest is not None and closest <= cfg["pass_radius_m"]:
         rec["status"] = "passed"
         out.append(_decision("stop_passed", s, at,
@@ -246,6 +267,7 @@ def step(state: dict, stops: list, fix: dict, cfg: Optional[dict] = None) -> tup
         rec = _rec(state, stops[i])
         if rec["closest_m"] is None or d < rec["closest_m"]:
             rec["closest_m"], rec["closest_at"] = d, _iso(at)
+        _track_near(rec, end_d[i], t, speed, cfg)
 
     if k >= n:
         out += _revisits(state, stops, p, t, speed, cfg)
@@ -329,6 +351,21 @@ def step(state: dict, stops: list, fix: dict, cfg: Optional[dict] = None) -> tup
         away["last_d"] = end_d[k]
     out += _revisits(state, stops, p, t, speed, cfg)
     return state, out
+
+
+def _track_near(rec: dict, d: float, t: datetime, speed, cfg: dict) -> None:
+    """Accumulate the longest stand-still within near_radius_m of a stop."""
+    slow = speed is not None and speed <= cfg["near_moving_mps"]
+    if d <= cfg["near_radius_m"] and slow:
+        if rec.get("near_since") is None:
+            rec["near_since"] = _iso(t)
+            rec["near_m"] = d
+        else:
+            rec["near_m"] = min(rec.get("near_m") or d, d)
+        dwell = (t - _parse(rec["near_since"])).total_seconds()
+        rec["near_dwell_s"] = max(rec.get("near_dwell_s") or 0.0, dwell)
+    else:
+        rec["near_since"] = None
 
 
 def _enter(state: dict, stops: list, i: int, at: datetime, d: float, speed, cfg: dict) -> list:

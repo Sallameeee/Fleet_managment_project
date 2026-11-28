@@ -193,3 +193,32 @@ def stops_pt(stops, i):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NearStopWait(unittest.TestCase):
+    def test_pin_170m_off_bus_waits_4_min_is_visited(self):
+        # Real case (6th of October trip, MSA University): the bus waited 4.5 min
+        # ~174 m from the stop pin and never entered the 60 m radius.
+        stops = g.stops_from([A, g.offset(A, 0, 3000)])
+        tr = g.Track(A, T0, seed=21, sigma_m=15)
+        tr.dwell(30).drive(g.offset(A, 170, 3000), 50).dwell(270)
+        st, log = run(stops, tr.fixes)
+        self.assertEqual(statuses(st, stops), ["visited", "visited"])
+        near = [d for d in events(log, "stop_arrived") if d["payload"].get("near")]
+        self.assertEqual(len(near), 1)
+        self.assertIn("from the stop pin", near[0]["message"])
+
+    def test_traffic_jam_near_stop_then_drive_through_is_still_passed(self):
+        stops = g.stops_from([A, g.offset(A, 0, 3000), g.offset(A, 0, 6000)])
+        tr = g.Track(A, T0, seed=22, sigma_m=10)
+        tr.dwell(30).drive(g.offset(A, 0, 2800), 50).dwell(120)  # jam 200 m before stop 2
+        tr.drive(g.offset(A, 0, 6000), 50).dwell(30)               # then straight through it
+        st, _ = run(stops, tr.fixes)
+        self.assertEqual(statuses(st, stops), ["visited", "passed", "visited"])
+
+    def test_brief_slowdown_near_stop_is_not_a_visit(self):
+        stops = g.stops_from([A, g.offset(A, 250, 3000), g.offset(A, 0, 6000)])
+        tr = g.Track(A, T0, seed=23, sigma_m=10)
+        tr.dwell(30).drive(g.offset(A, 0, 3000), 50).dwell(20).drive(g.offset(A, 0, 6000), 50).dwell(30)
+        st, _ = run(stops, tr.fixes)
+        self.assertEqual(statuses(st, stops)[1], "skipped")
