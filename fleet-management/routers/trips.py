@@ -20,6 +20,9 @@ from pydantic import BaseModel, Field
 
 import features as feature_flags
 import gps_filter
+import live_status
+import progress_runtime
+import trip_events
 import notifications_logic as notify
 import trip_lifecycle as lifecycle
 from alert_text import alert_meta
@@ -149,6 +152,9 @@ class PingIn(BaseModel):
     # trip-lifecycle end-reason inference (trip_lifecycle.py).
     battery: Optional[int] = Field(None, ge=0, le=100)
     net_state: Optional[str] = Field(None, max_length=16)
+    # Horizontal accuracy (m) of the fix, when the phone reports it (048). Feeds
+    # the GPS filter's accuracy allowance and the low_accuracy tag.
+    accuracy: Optional[float] = Field(None, ge=0, le=1_000_000)
 
 
 class HeartbeatIn(BaseModel):
@@ -619,6 +625,7 @@ def end_trip(
         if body is not None and body.ended_at is not None:
             revised = lifecycle.revise_to_driver_end(trip, at=end_dt, reported_at=now)
             if revised:
+                progress_runtime.finalize(revised, end_dt)  # stops never reached -> skipped (shared)
                 _compute_trip_performance(revised)  # school only; the backlog may add stop events
                 enriched = _enrich_one(revised)
                 enriched["message"] = "Recorded your End Trip with the time you pressed it."
@@ -646,6 +653,9 @@ def end_trip(
             detail=f"Could not end trip: {exc}",
         )
 
+    # Shared stop progression: close the stop the bus is at; every stop never
+    # reached is recorded as skipped with its closest approach (decision log).
+    progress_runtime.finalize(upd.data[0], end_dt)
     # School only, best-effort: compute + persist this trip's performance metrics.
     _compute_trip_performance(upd.data[0])
     # Trip-lifecycle log point (shared): TRIP ENDED — normally, by the driver.
@@ -878,7 +888,7 @@ def _load_own_trip_for_pings(trip_id: str, current_user: dict) -> dict:
     org_id = current_user["org_id"]
     result = (
         supabase.table("trips")
-        .select("id, org_id, driver_id, route_id, vehicle_id, status, ended_at")
+        .select("id, org_id, driver_id, route_id, vehicle_id, status, started_at, ended_at")
         .eq("id", trip_id)
         .eq("org_id", org_id)
         .limit(1)
@@ -1001,12 +1011,18 @@ def post_pings(
     # values feed both the insert and the chronological detection pass.
     server_now = datetime.now(timezone.utc)
     norm = []
+    naive_local = 0
+    missing_ts = 0
     for p in pings:
-        dt = p.recorded_at or server_now
+        dt = p.recorded_at
+        if dt is None:
+            dt = server_now
+            missing_ts += 1
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
+            dt, was_local = _resolve_naive(dt, server_now)
+            naive_local += was_local
         norm.append({"lat": p.lat, "lng": p.lng, "speed": p.speed, "heading": p.heading,
-                     "battery": p.battery, "net_state": p.net_state,
+                     "battery": p.battery, "net_state": p.net_state, "accuracy": p.accuracy,
                      "recorded_dt": dt, "recorded_at": dt.isoformat()})
     norm.sort(key=lambda n: n["recorded_dt"])
     min_ts, max_ts = norm[0]["recorded_dt"], norm[-1]["recorded_dt"]
@@ -1048,6 +1064,9 @@ def post_pings(
                         except Exception:
                             pass
             if not reopened:
+                trip_events.emit(trip, "pings_refused", f"{len(norm)} fix(es) refused: trip is completed and they were recorded after it ended",
+                                 {"received": len(norm), "ended_at": ended.isoformat(), "newest_fix": max_ts.isoformat(),
+                                  "grace_s": COMPLETED_TRIP_GRACE.total_seconds(), "http_status": 403})
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="This trip is 'completed', not active. Only active trips accept pings.",
@@ -1062,6 +1081,8 @@ def post_pings(
     for n in future:
         n["reject_reason"] = "future_timestamp"
         n["implied_kmh"] = None
+        n["why"] = {"ahead_s": round((n["recorded_dt"] - server_now).total_seconds(), 1),
+                    "server_now": server_now.isoformat(), "tolerance_s": FUTURE_SKEW_TOLERANCE.total_seconds()}
     norm = [n for n in norm if n["recorded_dt"] <= future_cut]
     if norm:
         min_ts, max_ts = norm[0]["recorded_dt"], norm[-1]["recorded_dt"]
@@ -1086,7 +1107,7 @@ def post_pings(
     # 2. Judge the batch against the last ACCEPTED stored fix (real history),
     #    so an offline backlog is filtered exactly like live fixes.
     anchor = _last_accepted_before(trip_id, min_ts) if norm else None
-    accepted, rejected = gps_filter.filter_fixes(fresh, anchor=anchor) if fresh else ([], [])
+    accepted, rejected = gps_filter.filter_fixes(fresh, anchor=anchor, trip_started_at=trip.get("started_at")) if fresh else ([], [])
     dup_in_batch = [r for r in rejected if r["reject_reason"] == "duplicate"]
     outliers = [r for r in rejected if r["reject_reason"] != "duplicate"] + future
 
@@ -1099,20 +1120,34 @@ def post_pings(
         if _ping_state_cols():
             row["battery"] = n.get("battery")
             row["net_state"] = n.get("net_state")
+        if accuracy_col:
+            row["accuracy"] = n.get("accuracy")
         if tag:
             row["is_outlier"] = bool(n.get("reject_reason"))
             row["reject_reason"] = n.get("reject_reason")
             row["implied_kmh"] = n.get("implied_kmh")
         return row
 
+    accuracy_col = lifecycle.has_col("location_pings", "accuracy")
     to_store = accepted + outliers  # raw outliers kept (tagged); duplicates are not data
     stored = 0
     if to_store:
         stored = _store_pings(to_store, _row)
+    if accepted:
+        _bump_last_fix(trip_id, max(a["recorded_dt"] for a in accepted))
+
+    # --- Trip decision log: one summary row per request + one row per rejected
+    # fix (capped) with the values that triggered the decision. ---
+    _log_ping_batch(trip, norm_count=len(pings), accepted=accepted, outliers=outliers,
+                    dup_in_batch=dup_in_batch, skipped_stored=skipped_stored, stored=stored,
+                    anchor=anchor, server_now=server_now, naive_local=naive_local, missing_ts=missing_ts,
+                    phone_battery=phone_battery, phone_net=phone_net, reopened=reopened)
 
     # --- Detection on the CLEAN, new fixes only: geofence stop events, offline
     # gaps, speeding, off_route, long_stop. Best-effort (never fails capture). ---
     detection = _process_pings(trip, accepted, anchor=anchor) if accepted else {"skipped": "no new accepted fixes"}
+    # Shared stop progression (next stop / arrived / passed / skipped).
+    progress = progress_runtime.apply_fixes(trip, accepted) if accepted else None
 
     # Trip lifecycle (shared): close an open connection-loss episode (CONNECTION
     # RESTORED), give TRIP STARTED its marker on the first fix, record the
@@ -1132,7 +1167,89 @@ def post_pings(
         "duplicates_skipped": skipped_stored + len(dup_in_batch),
         "trip_id": trip_id,
         "detection": detection,
+        # Shared stop progression after this batch (None when unchanged/unavailable).
+        "progress": progress,
     }
+
+
+# A device that sends a timestamp WITHOUT an offset is ambiguous. The contract
+# is UTC; but a build that serialised local Cairo time ("18:10:00" meaning
+# 16:10Z) would otherwise land 2-3 h "in the future" and be tagged
+# future_timestamp. When the UTC reading is in the future beyond tolerance and
+# the Africa/Cairo reading is within tolerance of now, the Cairo reading is the
+# only plausible one. The offset comes from ZoneInfo (DST-aware), never a constant.
+def _resolve_naive(dt: datetime, server_now: datetime) -> tuple:
+    as_utc = dt.replace(tzinfo=timezone.utc)
+    as_local = dt.replace(tzinfo=LOCAL_TZ).astimezone(timezone.utc)
+    if as_utc > server_now + FUTURE_SKEW_TOLERANCE and abs((as_local - server_now).total_seconds()) <= FUTURE_SKEW_TOLERANCE.total_seconds():
+        return as_local, 1
+    return as_utc, 0
+
+
+def _bump_last_fix(trip_id: str, newest: datetime) -> None:
+    """trips.last_fix_at = max(current, newest accepted fix) — live-state input."""
+    if not lifecycle.has_col("trips", "last_fix_at"):
+        return
+    iso = newest.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")  # no '+' in the filter
+    try:
+        (supabase.table("trips").update({"last_fix_at": iso}).eq("id", trip_id)
+         .or_(f"last_fix_at.is.null,last_fix_at.lt.{iso}").execute())
+    except Exception:
+        pass
+
+
+MAX_REJECT_EVENTS_PER_BATCH = 50
+
+
+def _log_ping_batch(trip: dict, *, norm_count: int, accepted: list, outliers: list, dup_in_batch: list,
+                    skipped_stored: int, stored: int, anchor, server_now: datetime, naive_local: int,
+                    missing_ts: int, phone_battery, phone_net, reopened: bool) -> None:
+    from collections import Counter
+    reasons = Counter(o["reject_reason"] for o in outliers)
+    stale = sum(1 for a in accepted if a.get("stale_repeat"))
+    span = [a["recorded_dt"] for a in accepted] + [o["recorded_dt"] for o in outliers]
+    lag = [(server_now - a["recorded_dt"]).total_seconds() for a in accepted]
+    payload = {
+        "received": norm_count, "accepted": len(accepted), "stored": stored,
+        "rejected": dict(reasons), "duplicates_in_batch": len(dup_in_batch), "already_stored": skipped_stored,
+        "stale_repeats": stale, "reanchored": sum(1 for a in accepted if a.get("reanchored")),
+        "first_fix_at": min(span).isoformat() if span else None, "last_fix_at": max(span).isoformat() if span else None,
+        "max_lag_s": round(max(lag), 1) if lag else None, "server_now": server_now.isoformat(),
+        "anchor_at": str(anchor.get("recorded_at")) if anchor else None,
+        "naive_local_timestamps_fixed": naive_local, "missing_timestamps": missing_ts,
+        "battery": phone_battery, "net_state": phone_net, "trip_reopened": reopened,
+        "filter": {"ceiling_kmh": gps_filter.SPIKE_CEILING_KMH, "default_accuracy_m": gps_filter.DEFAULT_ACCURACY_M,
+                   "low_accuracy_m": gps_filter.LOW_ACCURACY_M},
+    }
+    if accepted and anchor is None:
+        payload["first_fix_of_trip"] = {"lat": accepted[0]["lat"], "lng": accepted[0]["lng"],
+                                        "recorded_at": accepted[0]["recorded_dt"].isoformat()}
+    parts = [f"{norm_count} received", f"{len(accepted)} accepted"]
+    if reasons:
+        parts.append("rejected " + ", ".join(f"{k}×{v}" for k, v in reasons.items()))
+    if dup_in_batch or skipped_stored:
+        parts.append(f"{len(dup_in_batch) + skipped_stored} duplicate(s) skipped")
+    if stale:
+        parts.append(f"{stale} cached repeat(s)")
+    if naive_local:
+        parts.append(f"{naive_local} local-time stamp(s) corrected")
+    rows = [trip_events.make(trip, "ping_batch", "pings: " + ", ".join(parts), payload, occurred_at=server_now)]
+    for o in outliers[:MAX_REJECT_EVENTS_PER_BATCH]:
+        why = o.get("why") or {}
+        detail = ", ".join(f"{k}={v}" for k, v in why.items() if k in ("implied_kmh", "accuracy_m", "ahead_s", "age_before_start_s", "dist_m", "elapsed_s"))
+        rows.append(trip_events.make(
+            trip, "ping_rejected", f"fix rejected: {o['reject_reason']}" + (f" ({detail})" if detail else ""),
+            {"reason": o["reject_reason"], "lat": o["lat"], "lng": o["lng"], "recorded_at": o["recorded_dt"].isoformat(),
+             "implied_kmh": o.get("implied_kmh"), "accuracy": o.get("accuracy"), "speed": o.get("speed"), **why},
+            occurred_at=o["recorded_dt"]))
+    if len(outliers) > MAX_REJECT_EVENTS_PER_BATCH:
+        rows.append(trip_events.make(trip, "ping_rejected_more", f"{len(outliers) - MAX_REJECT_EVENTS_PER_BATCH} more rejected fixes in this batch (see location_pings)",
+                                     {"count": len(outliers) - MAX_REJECT_EVENTS_PER_BATCH}, occurred_at=server_now))
+    for d in dup_in_batch[:10]:
+        rows.append(trip_events.make(trip, "ping_duplicate", "fix dropped: exact duplicate (same time and place)",
+                                     {"lat": d["lat"], "lng": d["lng"], "recorded_at": d["recorded_dt"].isoformat(), **(d.get("why") or {})},
+                                     occurred_at=d["recorded_dt"]))
+    trip_events.write(rows)
 
 
 def _ping_state_cols() -> bool:
@@ -1162,13 +1279,45 @@ def post_heartbeat(
         norm.append({"sent_at": dt, "battery": b.battery, "net_state": b.net_state})
     norm.sort(key=lambda n: n["sent_at"])
     stored = 0
+    prev_sig = lifecycle.load_signals(trip_id) if trip["status"] == "active" else {}
     if trip["status"] == "active":
         stored = lifecycle.store_heartbeats(trip, norm)
         last = norm[-1] if norm else {}
         lifecycle.record_signal(trip_id, at=now, battery=last.get("battery"), net_state=last.get("net_state"), heartbeat=True)
+        _log_heartbeats(trip, norm, prev_sig, now, stored)
     else:
         lifecycle.on_signal_after_close(trip, kind="heartbeat", at=now)
+        trip_events.emit(trip, "heartbeat_after_end", f"heartbeat received for a {trip['status']} trip — the app is told to reset",
+                         {"beats": len(norm), "status": trip["status"]}, occurred_at=now)
     return {"trip_id": trip_id, "status": trip["status"], "stored": stored}
+
+
+def _log_heartbeats(trip: dict, beats: list, prev_sig: dict, now: datetime, stored: int) -> None:
+    """Heartbeats are ~1/min: log the FIRST one, buffered batches (the app was
+    offline), and changes of network state / low battery — not every beat."""
+    if not beats:
+        return
+    last = beats[-1]
+    first_ever = not prev_sig.get("last_heartbeat_at")
+    net_changed = last.get("net_state") and last.get("net_state") != prev_sig.get("last_net_state")
+    low = last.get("battery") is not None and last["battery"] <= lifecycle.LOW_BATTERY_PCT and \
+        (prev_sig.get("last_battery") is None or prev_sig["last_battery"] > lifecycle.LOW_BATTERY_PCT)
+    if not (first_ever or len(beats) > 1 or net_changed or low):
+        return
+    why = []
+    if first_ever:
+        why.append("first heartbeat of the trip")
+    if len(beats) > 1:
+        why.append(f"{len(beats)} buffered beats delivered together (app was offline)")
+    if net_changed:
+        why.append(f"network {prev_sig.get('last_net_state') or '?'} → {last.get('net_state')}")
+    if low:
+        why.append(f"battery low ({last['battery']} %)")
+    trip_events.emit(trip, "heartbeat", "app alive: " + "; ".join(why),
+                     {"beats": len(beats), "stored": stored, "first_sent_at": beats[0]["sent_at"].isoformat(),
+                      "last_sent_at": last["sent_at"].isoformat(), "battery": last.get("battery"),
+                      "net_state": last.get("net_state"), "lag_s": round((now - last["sent_at"]).total_seconds(), 1)},
+                     occurred_at=now)
 
 
 @router.post("/{trip_id}/app-state", status_code=status.HTTP_200_OK)
@@ -1186,7 +1335,76 @@ def post_app_state(
         lifecycle.record_signal(trip_id, at=now, battery=body.battery, net_state=body.net_state, app_state=body.state)
     else:
         lifecycle.on_signal_after_close(trip, kind="app_state", at=now)
+    meaning = {"detached": "app closed / swiped away", "paused": "app in background (or screen locked)",
+               "resumed": "app back in foreground"}[body.state]
+    at = body.at if body.at is None or body.at.tzinfo else body.at.replace(tzinfo=timezone.utc)
+    trip_events.emit(trip, "app_state", f"app state: {body.state} — {meaning}",
+                     {"state": body.state, "reported_at": at.isoformat() if at else None, "battery": body.battery,
+                      "net_state": body.net_state, "trip_status": trip["status"]}, occurred_at=at or now)
     return {"trip_id": trip_id, "status": trip["status"], "state": body.state}
+
+
+# ── App-side decision log ────────────────────────────────────────────────────
+# The driver app batches its own decisions (fix sampled / dropped by the
+# SpikeGate or duplicate gate / queued / sent / server response / permission and
+# background state / app version) in its offline buffer and posts them with the
+# ping + heartbeat flush. Size-capped; idempotent per client event id.
+APP_EVENT_MAX_BATCH = 200
+APP_EVENT_TYPE_PATTERN = r"^[a-z][a-z0-9_.]{0,47}$"
+APP_EVENT_ACCEPT_AFTER_END = timedelta(hours=24)
+
+
+class AppEventIn(BaseModel):
+    id: str = Field(..., min_length=1, max_length=64)           # client-generated, unique per event
+    type: str = Field(..., pattern=APP_EVENT_TYPE_PATTERN)       # e.g. gps.sampled, gate.spike_drop, queue.sent
+    at: datetime
+    message: Optional[str] = Field(None, max_length=500)
+    data: Optional[dict] = None                                  # bounded server-side (trip_events.PAYLOAD_MAX_BYTES)
+
+
+class AppEventBatchIn(BaseModel):
+    app_version: Optional[str] = Field(None, max_length=32)
+    build: Optional[str] = Field(None, max_length=32)
+    platform: Optional[str] = Field(None, max_length=32)        # android 14 / ios 17 ...
+    events: List[AppEventIn] = Field(..., max_length=APP_EVENT_MAX_BATCH)
+
+
+@router.post("/{trip_id}/events", status_code=status.HTTP_200_OK)
+def post_app_events(
+    trip_id: str,
+    body: AppEventBatchIn,
+    current_user: dict = Depends(require_role("driver")),
+):
+    """Store a batch of the driver app's own trip decisions in the trip decision
+    log (source='app'). Own trip only; active, or completed within 24 h (the
+    offline buffer drains after the trip ends). Re-sent events are ignored."""
+    trip = _load_own_trip_for_pings(trip_id, current_user)
+    now = datetime.now(timezone.utc)
+    if trip["status"] == "completed" and trip.get("ended_at"):
+        if now - gps_filter.parse_dt(trip["ended_at"]) > APP_EVENT_ACCEPT_AFTER_END:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="This trip ended too long ago to accept app events.")
+    build = {"app_version": body.app_version, "build": body.build, "platform": body.platform}
+    rows = []
+    for e in body.events:
+        at = e.at if e.at.tzinfo else e.at.replace(tzinfo=timezone.utc)
+        if at > now + FUTURE_SKEW_TOLERANCE:
+            at = now
+        rows.append(trip_events.make(trip, e.type, e.message or e.type, {**(e.data or {}), "_app": build},
+                                     source="app", occurred_at=at, client_event_id=e.id))
+    written = trip_events.write(rows)
+    return {"trip_id": trip_id, "received": len(rows), "stored": written, "status": trip["status"],
+            "log_available": trip_events.available()}
+
+
+@router.get("/{trip_id}/progress")
+def trip_progress(trip_id: str, current_user: dict = Depends(require_role("driver"))):
+    """The driver's own trip: next stop, ETA, progress and the live state — the
+    SAME shared progression the server uses for stop visits (stop_progress.py)."""
+    trip = _load_own_trip_for_pings(trip_id, current_user)
+    full = supabase.table("trips").select("*").eq("id", trip_id).limit(1).execute().data
+    t = full[0] if full else trip
+    return {"trip_id": trip_id, "status": t["status"], "progress": progress_runtime.view(t),
+            "live": live_status.for_trip(t)}
 
 
 def _last_accepted_before(trip_id: str, ts: datetime) -> Optional[dict]:

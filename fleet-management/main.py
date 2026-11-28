@@ -32,12 +32,21 @@ from routers import (
     routes,
     school,
     tracking,
+    trip_debug,
     trips,
     users,
     vehicles,
 )
 
 app = FastAPI(title="routemind-fleet")
+
+# 422s on the driver's tracking endpoints are recorded in the trip decision log
+# (an APK/backend payload mismatch must never be silent again). Same response.
+from fastapi.exceptions import RequestValidationError  # noqa: E402
+
+import tracking_rejects  # noqa: E402
+
+app.add_exception_handler(RequestValidationError, tracking_rejects.handler)
 
 # CORS: permissive for now — the dashboard (web) and the driver/passenger mobile
 # apps all call this API from different origins. Auth is via a Bearer token in the
@@ -68,6 +77,8 @@ app.include_router(users.router)
 app.include_router(routes.router)
 app.include_router(assignments.router)
 app.include_router(trips.router)
+# Admin-only trip decision log + fix verdicts (org-scoped; shared by both modules).
+app.include_router(trip_debug.router)
 app.include_router(alert_rules.router)
 app.include_router(alerts.router, dependencies=[Depends(require_feature("alerts"))])
 app.include_router(reports.router)
