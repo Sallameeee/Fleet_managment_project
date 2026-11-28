@@ -65,17 +65,19 @@ language plpgsql
 security definer
 set search_path = public
 as $$
-declare n integer;
+declare
+    keep_days integer := coalesce(nullif(greatest(days, 0), 0), 30);
+    n integer;
 begin
-    if days is null or days < 1 then
-        days := 30;
-    end if;
-    delete from trip_events where created_at < now() - make_interval(days => days);
+    delete from trip_events where created_at < now() - keep_days * interval '1 day';
     get diagnostics n = row_count;
     return n;
 end $$;
 
-revoke all on function purge_trip_events(integer) from public;
+-- Only the backend (service role) may purge; Supabase grants new functions to
+-- anon/authenticated by default, so revoke those explicitly.
+revoke all on function purge_trip_events(integer) from public, anon, authenticated;
+grant execute on function purge_trip_events(integer) to service_role;
 
 do $$ begin
     if exists (select 1 from pg_extension where extname = 'pg_cron') then
