@@ -114,11 +114,11 @@ class Track:
             self.pos = to
         return self
 
-    def spike(self, north_m: float = 3000.0):
+    def spike(self, north_m: float = 3000.0, accuracy: float = 10.0):
         """One genuinely impossible fix (multipath / bad cell fix)."""
         self._tick()
         bad = offset(self.pos, north_m, 0)
-        self.fixes.append({"lat": bad[0], "lng": bad[1], "speed": 0.0, "accuracy": 900.0,
+        self.fixes.append({"lat": bad[0], "lng": bad[1], "speed": 0.0, "accuracy": accuracy,
                            "recorded_at": self.t.isoformat().replace("+00:00", "Z")})
         self.truth.append(self.pos)
         return self

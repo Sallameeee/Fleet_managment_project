@@ -1172,18 +1172,9 @@ def post_pings(
     }
 
 
-# A device that sends a timestamp WITHOUT an offset is ambiguous. The contract
-# is UTC; but a build that serialised local Cairo time ("18:10:00" meaning
-# 16:10Z) would otherwise land 2-3 h "in the future" and be tagged
-# future_timestamp. When the UTC reading is in the future beyond tolerance and
-# the Africa/Cairo reading is within tolerance of now, the Cairo reading is the
-# only plausible one. The offset comes from ZoneInfo (DST-aware), never a constant.
 def _resolve_naive(dt: datetime, server_now: datetime) -> tuple:
-    as_utc = dt.replace(tzinfo=timezone.utc)
-    as_local = dt.replace(tzinfo=LOCAL_TZ).astimezone(timezone.utc)
-    if as_utc > server_now + FUTURE_SKEW_TOLERANCE and abs((as_local - server_now).total_seconds()) <= FUTURE_SKEW_TOLERANCE.total_seconds():
-        return as_local, 1
-    return as_utc, 0
+    """See gps_filter.resolve_naive_timestamp (shared, unit-tested)."""
+    return gps_filter.resolve_naive_timestamp(dt, server_now, LOCAL_TZ, FUTURE_SKEW_TOLERANCE)
 
 
 def _bump_last_fix(trip_id: str, newest: datetime) -> None:

@@ -310,3 +310,20 @@ def route_line_coords(geometry) -> Optional[list]:
         coords = g.get("coordinates") or []
         return coords if len(coords) >= 2 else None
     return None
+
+
+def resolve_naive_timestamp(dt: datetime, server_now: datetime, local_tz, tolerance) -> tuple:
+    """A device timestamp WITHOUT an offset is ambiguous. The contract is UTC,
+    but a build that serialised local time ("18:10:00" meaning 16:10Z in Cairo)
+    would land hours "in the future" and be tagged future_timestamp. When the
+    UTC reading is in the future beyond `tolerance` and the local reading is
+    within `tolerance` of now, the local reading is the only plausible one.
+    The offset comes from the tz database (DST-aware), never a constant.
+    Returns (aware UTC datetime, 1 if the local reading was used else 0)."""
+    if dt.tzinfo is not None:
+        return dt.astimezone(timezone.utc), 0
+    as_utc = dt.replace(tzinfo=timezone.utc)
+    as_local = dt.replace(tzinfo=local_tz).astimezone(timezone.utc)
+    if as_utc > server_now + tolerance and abs((as_local - server_now).total_seconds()) <= tolerance.total_seconds():
+        return as_local, 1
+    return as_utc, 0
