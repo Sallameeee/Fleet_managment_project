@@ -65,6 +65,22 @@ restarted once at 18:47/18:48).
   newest accepted ping < 2 min old`. Heartbeats are ignored, so a trip with heartbeats
   but no fixes is always OFFLINE.
 
+September trips of the same driver account, replayed read-only:
+- `5d2229f2` / `67e9bb31` / `787efaa5` start at 33.9858,-118.2541 (Los Angeles = the
+  Android EMULATOR default location) → emulator trips, not real-phone evidence.
+- REAL phone: `ea835a73` (El Mahalla → Cairo corridor, 686 fixes) and `fd8cca3f`
+  (6th of October, 142 fixes). Exact coordinate repeats happen only while standing
+  (0 repeats at > 3 m/s), so "cached fix while moving" is NOT shown on this phone.
+- On `ea835a73` the old gps_filter / Dart SpikeGate rejected 21 real fixes as
+  impossible_speed (implied 122–396 km/h) while the device reported ≤ 20 m/s; on
+  `fd8cca3f` 3 (device max 59 km/h). Pattern: positions LAG under ~10 s poll-time
+  stamps, then a catch-up jump is judged over one interval; plus ±20–40 m noise with
+  no accuracy allowance under a 120 km/h ceiling.
+  New rule (accuracy allowance, 160 km/h, first-seen time for repeats): 21 → 6 and
+  3 → 0; the 6 left are inconsistent with their own timestamps and stay stored, tagged.
+- This explains MISSING segments on the phone's live marker / arrival detection
+  (SpikeGate) and on maps, but NOT zero pings: the server stores tagged rejects too.
+
 Root cause (server-side view): the 24 Nov APK on a real phone never delivered a single
 fix while its heartbeat channel worked. That is an app-side regression between the
 September build and the 22–24 Nov build in the GPS → gate → buffer → send path. It
