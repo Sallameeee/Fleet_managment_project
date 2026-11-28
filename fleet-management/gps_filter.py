@@ -30,6 +30,27 @@ THE RULE (physically impossible only — never "smoothing", never snapping):
      relative to the anchor, the ANCHOR was the bad point (or GPS restarted
      somewhere new) — the current fix is accepted and becomes the new anchor.
 Original timestamps are never modified.
+
+REAL-WORLD CORRECTIONS (2026-11-28, from the 24 Nov / September real-phone
+forensics — see docs/tracking-fix-progress.md):
+  * Accuracy allowance: two honest fixes can each be off by their reported
+    accuracy, so the distance used for the implied speed is reduced by
+    acc_prev + acc_cur (DEFAULT_ACCURACY_M each when the phone does not say,
+    capped at MAX_ALLOWANCE_M each). The old rule turned +/-30 m of noise on a
+    5 s cadence at 100 km/h into "impossible".
+  * Ceiling 160 km/h (was 120): highway driving at 120-140 km/h is real; true
+    spikes are hundreds to thousands of km/h and are still rejected.
+  * Cached repeats: a phone re-sending the SAME coordinates with fresh
+    timestamps (an emulator, or an app falling back to a last-known position)
+    did not take a new fix.
+    The repeat is accepted (it is where the phone believes it is), but the
+    anchor keeps the time the position was FIRST seen, so the catch-up jump
+    after a cached stretch is measured over the true elapsed time instead of one
+    poll interval. Repeats are counted (`stale_repeat` flag) for the decision log.
+  * low_accuracy: a fix whose reported accuracy is worse than LOW_ACCURACY_M is
+    a network/cell estimate, not a GPS position — tagged, never drawn.
+  * before_trip_start: a fix recorded more than BEFORE_START_TOLERANCE_S before
+    the trip started is a cached last-known position (ingest only).
 """
 
 from __future__ import annotations
@@ -38,12 +59,29 @@ import math
 from datetime import datetime, timezone
 from typing import Iterable, Optional
 
-SPIKE_CEILING_KMH = 120.0   # a school/university bus cannot exceed this
+SPIKE_CEILING_KMH = 160.0   # no bus/car on these roads sustains this; real spikes are far above
 MIN_DT_S = 1.0              # elapsed-time floor for the implied-speed division
 REANCHOR_AFTER = 3          # consecutive impossible fixes -> the anchor was wrong
+DEFAULT_ACCURACY_M = 20.0   # assumed horizontal accuracy when the phone reports none
+MAX_ALLOWANCE_M = 100.0     # per-fix cap on the accuracy allowance
+LOW_ACCURACY_M = 150.0      # worse than this = network/cell estimate, not GPS
+BEFORE_START_TOLERANCE_S = 120.0
 
 # Points closer than this with the same timestamp are the same fix.
 _SAME_POINT_M = 0.5
+# Coordinates identical to this precision = the phone re-sent a cached fix.
+_REPEAT_EPS_DEG = 1e-7
+
+
+def _acc(p: dict) -> float:
+    a = p.get("accuracy")
+    if a is None or not isinstance(a, (int, float)) or a != a or a < 0:
+        return DEFAULT_ACCURACY_M
+    return min(float(a), MAX_ALLOWANCE_M)
+
+
+def _same_coords(a: dict, b: dict) -> bool:
+    return abs(a["lat"] - b["lat"]) <= _REPEAT_EPS_DEG and abs(a["lng"] - b["lng"]) <= _REPEAT_EPS_DEG
 
 
 def haversine_m(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
@@ -71,36 +109,58 @@ def _pt(row: dict) -> dict:
     return row
 
 
+def _reject(p: dict, reason: str, **why) -> dict:
+    q = dict(p)
+    q["reject_reason"] = reason
+    q["implied_kmh"] = why.pop("implied_kmh", None)
+    q["why"] = why
+    return q
+
+
 def filter_fixes(points: Iterable[dict], *, anchor: Optional[dict] = None,
-                 ceiling_kmh: float = SPIKE_CEILING_KMH):
+                 ceiling_kmh: float = SPIKE_CEILING_KMH, trip_started_at=None):
     """Run THE RULE over chronologically ordered fixes.
 
-    `points`: dicts with lat, lng and recorded_at (ISO) or recorded_dt.
+    `points`: dicts with lat, lng, recorded_at (ISO) or recorded_dt, optional
+              accuracy (m).
     `anchor`: the last ACCEPTED fix from before this sequence (ingest passes
               the stored predecessor so a batch is judged against real history).
+    `trip_started_at`: enables the before_trip_start tag (ingest only).
     Returns (accepted, rejected). Rejected entries carry `reject_reason`
-    ('duplicate' | 'same_timestamp' | 'impossible_speed') and, for speed
-    rejections, `implied_kmh`. Accepted entries are returned unchanged (plus
-    recorded_dt) so callers can pass them straight through.
+    ('duplicate' | 'same_timestamp' | 'impossible_speed' | 'low_accuracy' |
+    'before_trip_start'), `implied_kmh` for speed rejections, and `why` (the
+    values that triggered the decision, for the trip decision log). Accepted
+    entries are returned unchanged plus recorded_dt (and `stale_repeat` /
+    `reanchored` flags) so callers can pass them straight through.
     """
     accepted: list = []
     rejected: list = []
     prev = _pt(anchor) if anchor else None
+    if prev is not None:
+        prev.setdefault("seen_dt", prev["recorded_dt"])
     last_seen = prev  # most recent fix processed, accepted OR rejected
     streak = 0
+    start_dt = parse_dt(trip_started_at) if trip_started_at else None
     for raw in points:
         p = _pt(raw)
         # Rule 1 first, against the last fix SEEN (even a rejected one): a re-sent
         # copy of a spike is still just a copy — it must not count as another
         # "impossible" fix or it would defeat the re-anchor logic.
-        if last_seen is not None and (p["recorded_dt"] - last_seen["recorded_dt"]).total_seconds() <= 0                 and haversine_m(last_seen["lat"], last_seen["lng"], p["lat"], p["lng"]) <= _SAME_POINT_M:
-            q = dict(p)
-            q["reject_reason"] = "duplicate"
-            q["implied_kmh"] = None
-            rejected.append(q)
+        if last_seen is not None and (p["recorded_dt"] - last_seen["recorded_dt"]).total_seconds() <= 0 \
+                and haversine_m(last_seen["lat"], last_seen["lng"], p["lat"], p["lng"]) <= _SAME_POINT_M:
+            rejected.append(_reject(p, "duplicate", same_as=str(last_seen.get("recorded_at"))))
             continue
         last_seen = p
+        if start_dt is not None and (start_dt - p["recorded_dt"]).total_seconds() > BEFORE_START_TOLERANCE_S:
+            rejected.append(_reject(p, "before_trip_start", trip_started_at=start_dt.isoformat(),
+                                    age_before_start_s=round((start_dt - p["recorded_dt"]).total_seconds(), 1)))
+            continue
+        acc = p.get("accuracy")
+        if isinstance(acc, (int, float)) and acc == acc and acc > LOW_ACCURACY_M:
+            rejected.append(_reject(p, "low_accuracy", accuracy_m=round(float(acc), 1), limit_m=LOW_ACCURACY_M))
+            continue
         if prev is None:
+            p["seen_dt"] = p["recorded_dt"]
             accepted.append(p)
             prev = p
             continue
@@ -109,28 +169,38 @@ def filter_fixes(points: Iterable[dict], *, anchor: Optional[dict] = None,
         if dt <= 0:
             # Same instant (or older than the anchor): duplicate resend, or two
             # providers disagreeing at one timestamp. Never two truths at once.
-            q = dict(p)
-            q["reject_reason"] = "duplicate" if dist <= _SAME_POINT_M else "same_timestamp"
-            q["implied_kmh"] = None
-            rejected.append(q)
+            rejected.append(_reject(p, "duplicate" if dist <= _SAME_POINT_M else "same_timestamp",
+                                    anchor_at=str(prev.get("recorded_at")), dist_m=round(dist, 1)))
             continue
-        implied = dist / max(dt, MIN_DT_S) * 3.6
+        if _same_coords(prev, p):
+            # Cached fix re-sent with a fresh timestamp: keep the first-seen time.
+            p["stale_repeat"] = True
+            p["seen_dt"] = prev.get("seen_dt", prev["recorded_dt"])
+            streak = 0
+            accepted.append(p)
+            prev = p
+            continue
+        ref_dt = (p["recorded_dt"] - prev.get("seen_dt", prev["recorded_dt"])).total_seconds()
+        allowance = _acc(prev) + _acc(p)
+        eff = max(0.0, dist - allowance)
+        implied = eff / max(ref_dt, MIN_DT_S) * 3.6
         if implied > ceiling_kmh:
             streak += 1
             if streak >= REANCHOR_AFTER:
                 # Three fixes in a row disagree with the anchor -> the anchor was
                 # the outlier. Accept and re-anchor here.
                 p["reanchored"] = True
+                p["seen_dt"] = p["recorded_dt"]
                 accepted.append(p)
                 prev = p
                 streak = 0
                 continue
-            q = dict(p)
-            q["reject_reason"] = "impossible_speed"
-            q["implied_kmh"] = round(implied, 1)
-            rejected.append(q)
+            rejected.append(_reject(p, "impossible_speed", implied_kmh=round(implied, 1), dist_m=round(dist, 1),
+                                    allowance_m=round(allowance, 1), elapsed_s=round(ref_dt, 1),
+                                    ceiling_kmh=ceiling_kmh, anchor_at=str(prev.get("recorded_at"))))
             continue
         streak = 0
+        p["seen_dt"] = p["recorded_dt"]
         accepted.append(p)
         prev = p
     return accepted, rejected
