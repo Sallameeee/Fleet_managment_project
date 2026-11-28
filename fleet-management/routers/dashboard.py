@@ -14,6 +14,7 @@ from alert_text import alert_message_ar
 from auth import get_current_user
 import gps_filter
 from database import supabase
+import live_status
 from routers.reports import LOCAL_TZ  # Egypt UTC+2, for month boundaries
 from routers.trips import _haversine_m  # reuse the geofence haversine
 
@@ -51,19 +52,11 @@ def dashboard_summary(
     working_ids = {t["driver_id"] for t in active}
     active_trip_ids = [t["id"] for t in active]
 
-    # ONLINE = a ping in the last 2 min. Efficiency: restricted to the (few)
-    # active trips' ids + the time window — never scans the whole pings table.
-    online_ids: set = set()
-    if active_trip_ids:
-        cutoff = (datetime.now(timezone.utc) - ONLINE_WINDOW).isoformat()
-        recent = (
-            supabase.table("location_pings")
-            .select("driver_id")
-            .in_("trip_id", active_trip_ids)
-            .gte("recorded_at", cutoff)
-            .execute()
-        ).data
-        online_ids = {p["driver_id"] for p in recent}
+    # ONLINE = the shared live-state rule (live_status): app alive (heartbeat /
+    # any signal) on an active trip — a phone whose GPS is not reporting is
+    # still online ("online_no_gps"), never counted as offline. Bounded to the
+    # active trips' ids.
+    online_ids = live_status.online_driver_ids(supabase, active_trip_ids)
     online = len(online_ids)
 
     driver_counts = {

@@ -29,6 +29,10 @@ jobs:
       - name: Check Python source syntax in the image
         run: docker run --rm "$LOCAL_IMAGE" python -m compileall -q .
 
+      - name: Run tracking tests in the image (GPS filter, stop progression, live state, pipeline)
+        # Pure + in-memory: no Supabase credentials and no network needed.
+        run: docker run --rm --env LIFECYCLE_SWEEP=0 "$LOCAL_IMAGE" python -m unittest discover -s tests -v
+
       - name: Start the backend container
         # Repository secrets are unavailable to pull requests from forks. Those
         # PRs still run the build and Python compilation checks above.

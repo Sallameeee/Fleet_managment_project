@@ -1,0 +1,9 @@
+name: routemind_tracking_core
+description: >-
+  Shared tracking rules for the RouteMind driver app — the stop progression and
+  the GPS gate, ported 1:1 from the backend (fleet-management/stop_progress.py,
+  gps_filter.py) and checked against shared golden vectors. No dependencies.
+version: 1.0.0
+publish_to: none
+environment:
+  sdk: ^3.0.0

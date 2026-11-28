@@ -879,7 +879,12 @@ export interface DriverPosition {
   assignment_window: string | null; // "08:00–10:00" of the current assignment
   assignment_count: number; // assignments scheduled today
   position: { lat: number; lng: number; recorded_at: string } | null;
+  /** App alive on an active trip (online OR online_no_gps). */
   online: boolean;
+  /** online | online_no_gps | offline — backend live_status (absent on old backends). */
+  live_state?: "online" | "online_no_gps" | "offline";
+  gps_fresh?: boolean;
+  live_reason?: string | null;
   on_trip: boolean;
   last_ended_at: string | null;
   // Trip-lifecycle signals (migration 046; null before it)
@@ -1646,4 +1651,128 @@ export async function patchLogSettings(
   const res = await managerFetch("/log-settings", { method: "PATCH", body: JSON.stringify(body) });
   if (!res.ok) throw new Error(await extractError(res, "Failed to save log settings."));
   return (await res.json()) as LogSettings;
+}
+
+// --- Trip debug (admin only: owner / manage_settings) ------------------------
+// The trip decision log + every fix's verdict for ONE trip of the caller's own
+// org (backend routers/trip_debug.py). Module-agnostic: the backend only ever
+// returns the caller's org, so a University admin can never open a School trip.
+
+export type LiveState = "online" | "online_no_gps" | "offline";
+
+export interface TripDebugEvent {
+  id: number;
+  source: "app" | "server";
+  type: string;
+  occurred_at: string;
+  message: string;
+  payload: Record<string, unknown>;
+}
+
+export interface TripDebugFix {
+  id: number;
+  lat: number;
+  lng: number;
+  speed: number | null;
+  accuracy?: number | null;
+  recorded_at: string;
+  created_at: string | null;
+  accepted: boolean;
+  reason: string | null;
+  implied_kmh?: number | null;
+  battery?: number | null;
+  net_state?: string | null;
+  lag_s: number | null;
+}
+
+export interface TripDebugStop {
+  id: string;
+  stop_order: number;
+  name: string | null;
+  lat: number;
+  lng: number;
+}
+
+export interface TripDebugProgressStop {
+  stop_id: string;
+  stop_order: number;
+  name: string | null;
+  status: "visited" | "passed" | "skipped" | null;
+  closest_m: number | null;
+}
+
+export interface TripDebug {
+  trip: Record<string, string | number | null | Record<string, unknown>>;
+  module: "school" | "university";
+  route: { id: string; name: string; geometry?: unknown } | null;
+  stops: TripDebugStop[];
+  live: { state: LiveState; reason: string; signal_age_s: number | null; fix_age_s: number | null };
+  progress: {
+    next_stop: { name: string | null; stop_order: number; distance_m: number | null; eta_s: number | null; at_stop: boolean } | null;
+    total: number;
+    done: number;
+    skipped: number;
+    progress_pct: number;
+    stops: TripDebugProgressStop[];
+    arrive_radius_m: number;
+  } | null;
+  counts: {
+    fixes: number;
+    accepted: number;
+    rejected_by_reason: Record<string, number>;
+    events: number;
+    events_by_type: Record<string, number>;
+    events_by_source: Record<string, number>;
+    heartbeats: number;
+    stop_visits_by_status: Record<string, number>;
+  };
+  heartbeats: { count: number; first?: string; last?: string; gaps: { from: string; to: string; seconds: number }[]; median_lag_s?: number | null };
+  diagnosis: string[];
+  fixes: TripDebugFix[];
+  events: TripDebugEvent[];
+  alerts: { type: string; occurred_at: string; detail: string | null; lat: number | null; lng: number | null }[];
+  stop_visits: { stop_id: string; stop_order: number; status: string; arrival_time: string; closest_m?: number | null; decided_by?: string | null }[];
+  log_available: boolean;
+  retention_days: number;
+}
+
+export interface TripDebugListItem {
+  id: string;
+  driver_id: string;
+  route_id: string | null;
+  route_name: string | null;
+  vehicle_bus_number: string | null;
+  status: string;
+  started_at: string;
+  ended_at: string | null;
+}
+
+export async function listDebugTrips(dateFrom?: string, dateTo?: string): Promise<TripDebugListItem[]> {
+  const p = new URLSearchParams();
+  if (dateFrom) p.set("date_from", dateFrom);
+  if (dateTo) p.set("date_to", dateTo);
+  const res = await managerFetch(`/trip-debug/trips?${p.toString()}`);
+  if (!res.ok) throw new Error(await extractError(res, "Failed to load trips."));
+  return (await res.json()).trips as TripDebugListItem[];
+}
+
+export async function getTripDebug(tripId: string): Promise<TripDebug> {
+  const res = await managerFetch(`/trip-debug/${encodeURIComponent(tripId)}`);
+  if (!res.ok) throw new Error(await extractError(res, "Failed to load the trip debug view."));
+  return (await res.json()) as TripDebug;
+}
+
+/** Fetch the export (with auth) and trigger a browser download. */
+export async function downloadTripDebug(tripId: string, format: "json" | "csv"): Promise<void> {
+  const res = await managerFetch(`/trip-debug/${encodeURIComponent(tripId)}/export?format=${format}`);
+  if (!res.ok) throw new Error(await extractError(res, "Failed to export."));
+  const blob = await res.blob();
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `trip-debug-${tripId.slice(0, 8)}.${format}`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  window.URL.revokeObjectURL(url);
 }

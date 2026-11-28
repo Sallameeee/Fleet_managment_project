@@ -41,6 +41,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import gps_filter
+import live_status
+import trip_events
 from capacity_logic import LOCAL_TZ
 from database import supabase
 from log_settings_logic import effective_log_settings
@@ -298,6 +300,8 @@ def log_event(trip: dict, type_: str, *, occurred_at: datetime, lat=None, lng=No
         if dup:
             return dup[0]
         res = supabase.table("alerts").insert(row).execute()
+        trip_events.emit(trip, f"lifecycle_{type_}", en, {**{k: v for k, v in p.items() if k != "time"}, "lat": lat, "lng": lng},
+                         occurred_at=occurred_at)
         return res.data[0] if res.data else row
     except Exception as exc:
         log.warning("log_event %s/%s failed: %s", trip.get("id"), type_, str(exc)[:160])
@@ -575,10 +579,13 @@ def _auto_close(trip: dict, sig: dict, last_signal_at: datetime, now: datetime) 
 def sweep_once(only_trip_ids: Optional[set] = None, now: Optional[datetime] = None) -> dict:
     """One pass over ACTIVE trips (all orgs). Returns counters. `only_trip_ids`
     scopes a pass to specific trips (tests); `now` overrides the clock (tests)."""
-    out = {"checked": 0, "connection_lost": 0, "auto_closed": 0}
+    out = {"checked": 0, "connection_lost": 0, "auto_closed": 0, "live_state_changes": 0}
     now = now or now_utc()
     cols = "id, org_id, driver_id, route_id, started_at, status"
     full = has_col("trips", "last_signal_at")
+    live_cols = has_col("trips", "live_state") and has_col("trips", "last_fix_at")
+    if live_cols:
+        cols += ", last_fix_at, live_state, live_state_at"
     try:
         q = supabase.table("trips").select(cols + (", " + TRIP_LIFECYCLE_COLS if full else "")).eq("status", "active")
         if only_trip_ids:
@@ -616,6 +623,12 @@ def sweep_once(only_trip_ids: Optional[set] = None, now: Optional[datetime] = No
                     if not has_col("trips", "conn_lost_at"):
                         pass  # pre-046: _open_episode reads the alert rows instead
 
+            # 1b. live state (online / online_no_gps / offline): log every
+            #     transition with the inputs that decided it (trip decision log).
+            if live_cols:
+                if note_live_state(trip, now=now):
+                    out["live_state_changes"] += 1
+
             # 2. stale auto-close: no signal of ANY kind for > threshold.
             limit = timedelta(minutes=stale_min) if full else timedelta(hours=PRE_MIGRATION_STALE_CLOSE_H)
             if now - last_signal > limit:
@@ -624,6 +637,42 @@ def sweep_once(only_trip_ids: Optional[set] = None, now: Optional[datetime] = No
         except Exception as exc:
             log.warning("sweep: trip %s: %s", trip.get("id"), str(exc)[:160])
     return out
+
+
+def note_live_state(trip: dict, *, now: Optional[datetime] = None) -> bool:
+    """Compute the trip's live state; on a change, store it and log the
+    transition (from -> to, why, signal / fix ages). Returns True on a change.
+    `trip` must carry last_signal_at / last_heartbeat_at / last_fix_at /
+    live_state (as selected by the sweeper)."""
+    now = now or now_utc()
+    st = live_status.for_trip({**trip, "status": "active"}, now=now)
+    prev = trip.get("live_state")
+    if st["state"] == prev:
+        return False
+    update_trip(trip["id"], {"live_state": st["state"], "live_state_at": now.isoformat()})
+    since = parse_dt(trip.get("live_state_at"))
+    trip_events.emit(trip, "live_state", f"{prev or 'start'} → {st['state']}: {st['reason']}",
+                     {**st, "from": prev, "to": st["state"],
+                      "previous_for_s": round((now - since).total_seconds(), 1) if since else None,
+                      "battery": trip.get("last_battery"), "net_state": trip.get("last_net_state"),
+                      "signal_fresh_s": live_status.SIGNAL_FRESH.total_seconds(),
+                      "fix_fresh_s": live_status.FIX_FRESH.total_seconds()},
+                     occurred_at=now)
+    return True
+
+
+_PURGE_EVERY_S = 6 * 3600
+_last_purge = 0.0
+
+
+def _maybe_purge() -> None:
+    global _last_purge
+    if time.time() - _last_purge < _PURGE_EVERY_S:
+        return
+    _last_purge = time.time()
+    n = trip_events.purge()
+    if n:
+        log.info("trip_events retention: purged %s rows older than %s days", n, trip_events.RETENTION_DAYS)
 
 
 _sweeper_started = False
@@ -649,6 +698,7 @@ def start_sweeper() -> None:
         while True:
             try:
                 sweep_once()
+                _maybe_purge()
                 _sweeper_status["last_sweep_at"] = datetime.now(timezone.utc).isoformat()
             except Exception as exc:  # never let the loop die
                 _sweeper_status["last_error_at"] = datetime.now(timezone.utc).isoformat()

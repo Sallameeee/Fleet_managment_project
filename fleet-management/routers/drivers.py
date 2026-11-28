@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 
 from auth import require_permission
 from database import supabase
+import live_status
 from utils import synthesize_login_email
 
 router = APIRouter(prefix="/drivers", tags=["drivers"])
@@ -240,17 +241,8 @@ def list_drivers(
         ):
             bus[v["id"]] = v["bus_number"]
 
-    online_ids: set = set()
-    if active_trip_ids:
-        cutoff = (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat()
-        recent = (
-            supabase.table("location_pings")
-            .select("driver_id")
-            .in_("trip_id", active_trip_ids)
-            .gte("recorded_at", cutoff)
-            .execute()
-        ).data
-        online_ids = {p["driver_id"] for p in recent}
+    # Shared live-state rule (live_status): app alive on an active trip.
+    online_ids = live_status.online_driver_ids(supabase, active_trip_ids)
 
     for d in drivers:
         trip = trip_by_driver.get(d["id"])

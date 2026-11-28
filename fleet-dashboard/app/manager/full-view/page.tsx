@@ -84,6 +84,17 @@ function routeGeometry(r: ManagerRoute): GeoJSON.LineString | null {
   return coords.length >= 2 ? { type: "LineString", coordinates: coords } : null;
 }
 
+// Live state (backend live_status): online = app alive + fresh accepted fix;
+// online_no_gps = app alive but no fresh fix (amber, never shown as offline).
+function liveKey(d: DriverPosition): string {
+  const st = d.live_state ?? (d.online ? "online" : "offline");
+  return st === "online_no_gps" ? "td.state.online_no_gps" : st === "online" ? "common.online" : "common.offline";
+}
+function liveColor(d: DriverPosition): string {
+  const st = d.live_state ?? (d.online ? "online" : "offline");
+  return st === "online" ? "#22c55e" : st === "online_no_gps" ? "#f59e0b" : "#64748b";
+}
+
 export default function FullViewPage() {
   const { t } = useT();
   const [positions, setPositions] = useState<DriverPosition[]>([]);
@@ -343,7 +354,7 @@ export default function FullViewPage() {
       if (!d.position) return;
       const focused = d.driver_id === focusedId;
       const selected = selectedIds.includes(d.driver_id);
-      const base = d.online ? "#22c55e" : "#64748b";
+      const base = liveColor(d);
       const ring = focused ? "#fde68a" : selected ? "#3AA76D" : "#ffffff";
       const glow = focused
         ? "0 0 0 3px rgba(253,230,138,.5)"
@@ -470,9 +481,9 @@ export default function FullViewPage() {
                 <div className="min-w-0">
                   <div className="truncate font-semibold text-white">{focused.name}</div>
                   <div className="mt-0.5 flex items-center gap-1.5 text-xs">
-                    <span className={"h-2 w-2 rounded-full " + (focused.online ? "bg-green-500" : "bg-slate-500")} />
-                    <span className={focused.online ? "text-green-400" : "text-slate-400"}>
-                      {focused.online ? t("common.online") : t("common.offline")}
+                    <span className="h-2 w-2 rounded-full" style={{ background: liveColor(focused) }} />
+                    <span style={{ color: liveColor(focused) }} title={focused.live_reason ?? undefined}>
+                      {t(liveKey(focused))}
                     </span>
                     <span className="text-slate-500">· {t("full.lastSeen")} {sinceLabel(focused.position?.recorded_at ?? null, t)}</span>
                   </div>
@@ -659,8 +670,9 @@ export default function FullViewPage() {
                     <button onClick={() => setFocusedId(d.driver_id)} className="min-w-0 flex-1 text-start">
                       <div className="flex items-center justify-between gap-2">
                         <span className="truncate font-medium text-white">{d.name}</span>
-                        <span className={d.online ? "inline-flex shrink-0 items-center gap-1 text-xs text-green-400" : "shrink-0 text-xs text-slate-500"}>
-                          {d.online ? <><span className="h-2 w-2 rounded-full bg-green-500" />{t("common.online")}</> : t("common.offline")}
+                        <span className="inline-flex shrink-0 items-center gap-1 text-xs" style={{ color: liveColor(d) }} title={d.live_reason ?? undefined}>
+                          {d.online && <span className="h-2 w-2 rounded-full" style={{ background: liveColor(d) }} />}
+                          {t(liveKey(d))}
                         </span>
                       </div>
                       <div className="mt-0.5 truncate text-xs text-slate-400">
