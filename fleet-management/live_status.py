@@ -91,7 +91,9 @@ def for_trip(trip: dict, *, now: Optional[datetime] = None, last_fix_at=None) ->
     newest accepted fix pass its recorded_at; pre-048 databases have no column)."""
     now = now or datetime.now(timezone.utc)
     if trip.get("status") not in (None, "active"):
-        return compute(now=now)  # -> offline
+        st = compute(now=now)  # -> offline
+        st["reason"] = f"trip is {trip.get('status')}"
+        return st
     return compute(
         now=now,
         last_signal_at=trip.get("last_signal_at"),

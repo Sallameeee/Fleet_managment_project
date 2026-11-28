@@ -192,6 +192,9 @@ export default function TripDebugPage() {
       mapRef.current = map;
       const byId = () => new Map((data?.fixes ?? []).map((f) => [f.id, f]));
       const onClick = (e: mapboxgl.MapLayerMouseEvent) => {
+        // A rejected fix drawn over an accepted one wins the tap.
+        const onRed = map.queryRenderedFeatures(e.point, { layers: ["td-rej"] });
+        if (e.features?.[0]?.layer?.id === "td-acc" && onRed.length) return;
         const id = e.features?.[0]?.properties?.id as number | undefined;
         const f = id != null ? byId().get(Number(id)) : undefined;
         if (!f) return;
@@ -244,7 +247,7 @@ export default function TripDebugPage() {
           {t("td.to")}
           <input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="mt-1 block rounded-md border border-white/10 bg-transparent px-2 py-1.5 text-sm" />
         </label>
-        <label className="min-w-0 flex-1 text-xs text-slate-400">
+        <label className="min-w-0 flex-1 basis-full text-xs text-slate-400 sm:basis-auto">
           {t("td.pickTrip")}
           <select value={tripId} onChange={(e) => setTripId(e.target.value)} className="mt-1 block w-full rounded-md border border-white/10 bg-transparent px-2 py-1.5 text-sm">
             <option value="">{trips.length ? "—" : t("td.noTrips")}</option>
