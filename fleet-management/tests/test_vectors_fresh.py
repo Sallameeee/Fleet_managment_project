@@ -17,10 +17,15 @@ import stop_progress as sp  # noqa: E402
 VEC = os.path.join(os.path.dirname(os.path.dirname(HERE)), "shared", "dart", "test", "vectors.json")
 
 
+def _load():
+    with open(VEC, encoding="utf-8") as f:
+        return json.load(f)
+
+
 @unittest.skipUnless(os.path.exists(VEC), "shared/dart not in this build context")
 class VectorsFresh(unittest.TestCase):
     def test_progression_vectors_match_python(self):
-        v = json.load(open(VEC, encoding="utf-8"))
+        v = _load()
         for vec in v["progression"]:
             cfg = sp.config(vec["cfg"])
             st = sp.new_state()
@@ -33,7 +38,7 @@ class VectorsFresh(unittest.TestCase):
             self.assertEqual(got, vec["expect"]["decisions"], vec["name"])
 
     def test_gate_vectors_match_python(self):
-        v = json.load(open(VEC, encoding="utf-8"))
+        v = _load()
         for vec in v["gate"]:
             acc, rej = gf.filter_fixes(vec["fixes"], trip_started_at=vec["trip_started_at"])
             self.assertEqual(len(rej), sum(1 for x in vec["expect"] if x != "ok"), vec["name"])

@@ -288,5 +288,54 @@ class Silence(unittest.TestCase):
         self.assertEqual(states, ["online_no_gps", "offline"])
 
 
+class BackendBeforeMigration048(unittest.TestCase):
+    """Deploy-order safety: the new backend on a database WITHOUT migration 048
+    (no trip_events table, no new columns) must keep tracking exactly as before."""
+    TRIP = "f0000000-0000-4000-8000-000000000048"
+
+    @classmethod
+    def setUpClass(cls):
+        now = datetime.now(timezone.utc)
+        seed(now - timedelta(minutes=15), cls.TRIP)
+        DB.missing_tables.add("trip_events")
+        DB.strict_cols["trips"] = {"id", "org_id", "driver_id", "route_id", "vehicle_id", "assignment_id", "status",
+                                   "started_at", "ended_at", "score", "created_at", "last_signal_at", "last_heartbeat_at",
+                                   "last_battery", "last_net_state", "app_closed_at", "conn_lost_at", "end_reason", "end_detail"}
+        DB.strict_cols["location_pings"] = {"id", "trip_id", "org_id", "driver_id", "lat", "lng", "speed", "heading",
+                                            "recorded_at", "created_at", "is_outlier", "reject_reason", "implied_kmh",
+                                            "battery", "net_state"}
+        DB.strict_cols["stop_visits"] = {"id", "trip_id", "org_id", "stop_id", "stop_order", "arrival_time",
+                                         "departure_time", "planned_dwell_seconds", "actual_dwell_seconds", "created_at", "status"}
+        for t in DB.tables["trips"]:
+            t.pop("progress_version", None)
+        tr = g.Track(tuple(STOPS[0]), now - timedelta(minutes=14), seed=48, sigma_m=20)
+        tr.drive(tuple(STOPS[1]), 50).spike(3000).drive(tuple(STOPS[2]), 50)
+        cls.n = len(tr.fixes)
+        cls.codes = [CLIENT.post(f"/trips/{cls.TRIP}/pings", json=tr.fixes[i:i + 6], headers=H("drv_u")).status_code
+                     for i in range(0, cls.n, 6)]
+        cls.hb = CLIENT.post(f"/trips/{cls.TRIP}/heartbeat", json={"sent_at": now.isoformat(), "net_state": "online"}, headers=H("drv_u"))
+        cls.ev = CLIENT.post(f"/trips/{cls.TRIP}/events", json={"events": [{"id": "x1", "type": "gps.sampled", "at": now.isoformat()}]},
+                             headers=H("drv_u"))
+        cls.pos = CLIENT.get("/live/positions", headers=H("adm_u"))
+        cls.dbg = CLIENT.get(f"/trip-debug/{cls.TRIP}", headers=H("adm_u"))
+        cls.end = CLIENT.post(f"/trips/{cls.TRIP}/end", json={}, headers=H("drv_u"))
+        trip_lifecycle.sweep_once(only_trip_ids={cls.TRIP}, now=now)
+
+    def test_pings_still_accepted_and_stored(self):
+        self.assertTrue(all(c == 201 for c in self.codes), self.codes)
+        self.assertEqual(len(DB.tables["location_pings"]), self.n)
+        self.assertEqual(sum(1 for p in DB.tables["location_pings"] if p.get("is_outlier")), 1)
+
+    def test_other_endpoints_degrade_cleanly(self):
+        self.assertEqual(self.hb.status_code, 200)
+        self.assertEqual(self.ev.status_code, 200)
+        self.assertEqual(self.ev.json()["stored"], 0)
+        self.assertFalse(self.ev.json()["log_available"])
+        self.assertEqual(self.pos.status_code, 200)
+        self.assertEqual(self.dbg.status_code, 200)
+        self.assertFalse(self.dbg.json()["log_available"])
+        self.assertEqual(self.end.status_code, 200, self.end.text)
+
+
 if __name__ == "__main__":
     unittest.main()

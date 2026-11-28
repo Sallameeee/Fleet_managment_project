@@ -167,7 +167,16 @@ class Query:
 
     # execution
     def _rows(self):
+        if self.table in self.db.missing_tables:
+            raise APIError(f"Could not find the table 'public.{self.table}' in the schema cache")
         return self.db.tables.setdefault(self.table, [])
+
+    def _check_cols(self, row):
+        allowed = self.db.strict_cols.get(self.table)
+        if allowed:
+            for c in row:
+                if c not in allowed:
+                    raise APIError(f"Could not find the '{c}' column of '{self.table}' in the schema cache")
 
     def _match(self):
         return [r for r in self._rows() if all(f(r) for f in self.filters)]
@@ -206,6 +215,11 @@ class Query:
     def execute(self):
         self.db.calls += 1
         if self.op == "select":
+            allowed = self.db.strict_cols.get(self.table)
+            if allowed and self.cols.strip() != "*":  # PostgREST validates columns even on an empty table
+                for c in [c.strip() for c in self.cols.split(",") if c.strip()]:
+                    if c not in allowed:
+                        raise APIError(f"column {self.table}.{c} does not exist")
             rows = self._match()
             for c, desc in reversed(self.orders):
                 rows.sort(key=lambda r: (r.get(c) is None, _norm(r.get(c)) if r.get(c) is not None else 0), reverse=desc)
@@ -219,6 +233,7 @@ class Query:
             out = []
             keys = self._conflict_cols() if self.op == "upsert" else UNIQUE.get(self.table, [])
             for row in payload:
+                self._check_cols(row)
                 hit = self._find_conflict(row, keys)
                 if hit is not None:
                     if self.op == "insert":
@@ -233,6 +248,7 @@ class Query:
                 out.append(copy.deepcopy(r))
             return Result(out)
         if self.op == "update":
+            self._check_cols(self.payload)
             out = []
             for r in self._match():
                 r.update(copy.deepcopy(self.payload))
@@ -264,6 +280,7 @@ class FakeClient:
     def __init__(self):
         self.tables: dict = {}
         self.strict_cols: dict = {}
+        self.missing_tables: set = set()
         self.calls = 0
 
     def table(self, name):
@@ -274,6 +291,8 @@ class FakeClient:
 
     def reset(self):
         self.tables.clear()
+        self.strict_cols.clear()
+        self.missing_tables.clear()
         self.calls = 0
 
 
