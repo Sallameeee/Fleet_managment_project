@@ -17,8 +17,10 @@ FAILS = []
 # Number of API paths the deployed backend exposes. Update it whenever endpoints
 # are added or removed: 107 until 2026-11-24, then +5 in 857bd39 (/branding/me,
 # /branding/logo, /branding/orgs/{org_id}, /branding/orgs/{org_id}/logo,
-# /trips/my-schedule).
-EXPECTED_PATHS = 112
+# /trips/my-schedule), then +5 in 3358b95 (/trips/{trip_id}/events,
+# /trips/{trip_id}/progress, /trip-debug/trips, /trip-debug/{trip_id},
+# /trip-debug/{trip_id}/export).
+EXPECTED_PATHS = 117
 
 
 def check(name, ok, ev, warn=False):
