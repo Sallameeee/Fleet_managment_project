@@ -1,0 +1,41 @@
+name: Shared tracking rules (Python <-> Dart parity)
+
+# The driver app's stop progression and GPS gate (shared/dart) are 1:1 ports of
+# the backend rules. Both must decide identically on the shared golden vectors.
+on:
+  push:
+    paths:
+      - "shared/dart/**"
+      - "fleet-management/stop_progress.py"
+      - "fleet-management/gps_filter.py"
+      - "fleet-management/tests/**"
+  pull_request:
+    paths:
+      - "shared/dart/**"
+      - "fleet-management/stop_progress.py"
+      - "fleet-management/gps_filter.py"
+      - "fleet-management/tests/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  parity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Python vectors are fresh
+        working-directory: fleet-management
+        run: python -m unittest tests.test_vectors_fresh -v
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: "3.5.0"
+      - name: Dart port decides like the server
+        working-directory: shared/dart
+        run: |
+          dart analyze
+          dart run test/vectors_test.dart

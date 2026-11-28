@@ -1,0 +1,14 @@
+{
+  "roots": [
+    "routemind_tracking_core"
+  ],
+  "packages": [
+    {
+      "name": "routemind_tracking_core",
+      "version": "1.0.0",
+      "dependencies": [],
+      "devDependencies": []
+    }
+  ],
+  "configVersion": 1
+}
