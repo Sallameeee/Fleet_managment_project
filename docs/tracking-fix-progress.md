@@ -104,8 +104,22 @@ did, and "OFFLINE" instead of "online, no GPS".
   incl. an end-to-end pipeline test via the real FastAPI app on an in-memory DB.
   CI runs them in the image.
 
+- qa/replay_real_trips.py — real fixes/heartbeats replayed (read-only) through the
+  real pipeline; results in C:\Users\ibrah\RouteMind_DEMO\trip_forensics\replay\.
+  Near-stop wait rule added (MSA University pin 174 m off; bus waited 4.5 min).
+- shared/dart: Dart port of stop_progress + GPS gate; 16/16 golden vectors match.
+- docs/driver-app-tracking-contract.md — what the app must change.
+
+## Part E — route search (Google Places)
+
+- Deployed key (Vercel bundle) == local `.env.local` key `AIzaSy…wrAg`.
+- Legacy Places autocomplete: `REQUEST_DENIED — You must enable Billing on the
+  Google Cloud Project`; same for the Vercel referrer, localhost and no referrer.
+  Places API (New): `403 PERMISSION_DENIED`. Maps JS loader: 200.
+  ⇒ cause = billing disabled on the key's GCP project (not referrer, not a deleted key).
+- Mapbox (existing token): towns OK (المحلة الكبرى), POIs poor (MSA University,
+  Mall of Arabia, Sadat metro, a gas station → nothing / wrong). Not switched.
+
 ## Next
 
-1. qa/replay_real_trips.py — replay real fixes (read-only) through the pipeline.
-2. Dart port (shared/dart) of stop_progress + GPS gate with shared golden vectors.
-3. Part E maps key diagnosis. 4. Report + deploy plan (Part G).
+1. Part G report + deploy plan. 2. Driver app: blocked on source (see contract doc).
